@@ -156,7 +156,7 @@ struct TerminalSettingsView: View {
                     }
                 }
                 TextField("默认 Shell（留空使用登录 Shell）", text: $preferences.shellPath)
-                Text("工作目录始终使用左侧选中的目录。Shell 或配置来源变更从新终端开始生效。")
+                Text("工作路径始终使用当前文件夹。Shell 或配置来源变更从新终端开始生效。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

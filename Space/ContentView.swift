@@ -1,19 +1,51 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
-    @State private var isSidebarVisible = true
+    @EnvironmentObject private var workspace: AppModel
     @State private var sidebarWidth = 290.0
+    @State private var windowWidth: CGFloat = 1_220
+
+    private var terminalTabStripMaximumWidth: CGFloat {
+        windowWidth * 2 / 3
+    }
+
+    private var folderImporterIsPresented: Binding<Bool> {
+        Binding(
+            get: { workspace.isFolderImporterPresented },
+            set: { isPresented in
+                if !isPresented { workspace.dismissFolderImporter() }
+            }
+        )
+    }
+
+    private var alertState: Binding<WorkspaceAlertState?> {
+        Binding(
+            get: { workspace.alertState },
+            set: { state in
+                if state == nil { workspace.dismissAlert() }
+            }
+        )
+    }
+
+    private var renameRequest: Binding<TerminalRenameRequest?> {
+        Binding(
+            get: { workspace.renameRequest },
+            set: { request in
+                if request == nil { workspace.dismissRenameRequest() }
+            }
+        )
+    }
 
     var body: some View {
         ZStack {
-            if workspace.rootNodes.isEmpty {
+            if workspace.folders.isEmpty {
                 WorkspaceEmptyView()
             } else {
                 HSplitView {
-                    if isSidebarVisible {
-                        FileSidebar()
+                    if workspace.isSidebarVisible {
+                        DirectorySidebar()
                         .frame(
                             minWidth: 230,
                             idealWidth: sidebarWidth,
@@ -33,376 +65,316 @@ struct ContentView: View {
                     .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-
-            if workspace.isCommandPalettePresented {
-                DirectoryCommandPalette()
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    .zIndex(1)
-            }
-
-            if workspace.isActionPalettePresented {
-                SpaceCommandPalette()
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                    .zIndex(2)
-            }
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .background(WindowFrameAutosaver(
-            title: workspace.activeDirectory?.lastPathComponent ?? "Space"
+        .navigationTitle("")
+        .background(WindowConfigurator(
+            sidebarIsVisible: workspace.isSidebarVisible
         ))
         .toolbar {
-            if !workspace.rootNodes.isEmpty {
-                ToolbarItem(placement: .principal) {
-                    TerminalTabStrip()
-                        .frame(minWidth: 320, idealWidth: 620, maxWidth: 900)
+            if !workspace.folders.isEmpty,
+               !workspace.activeDirectoryTabs.isEmpty {
+                if #available(macOS 26.0, *) {
+                    ToolbarItem(placement: .principal) {
+                        TerminalTitleBarContent(
+                            maximumTabStripWidth: terminalTabStripMaximumWidth
+                        )
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .principal) {
+                        TerminalTitleBarContent(
+                            maximumTabStripWidth: terminalTabStripMaximumWidth
+                        )
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                 }
             }
 
             ToolbarItemGroup(placement: .navigation) {
-                if !workspace.rootNodes.isEmpty {
+                if !workspace.folders.isEmpty {
                     Button {
-                        isSidebarVisible.toggle()
+                        workspace.toggleSidebar()
                     } label: {
                         Image(systemName: "sidebar.left")
                     }
                     .keyboardShortcut("s", modifiers: [.command, .option])
-                    .help(isSidebarVisible
-                        ? "收起文件目录（⌥⌘S）"
-                        : "展开文件目录（⌥⌘S）")
-                    .accessibilityLabel(isSidebarVisible
-                        ? "收起文件目录"
-                        : "展开文件目录")
+                    .help(workspace.isSidebarVisible
+                        ? "收起文件夹列表（⌥⌘S）"
+                        : "展开文件夹列表（⌥⌘S）")
+                    .accessibilityLabel(workspace.isSidebarVisible
+                        ? "收起文件夹列表"
+                        : "展开文件夹列表")
                 }
-
-                Button {
-                    workspace.chooseRootDirectory()
-                } label: {
-                    Image(systemName: "folder.badge.plus")
-                }
-                .help("添加工作目录")
-                .accessibilityLabel("添加工作目录")
             }
         }
         .onPreferenceChange(SidebarWidthPreferenceKey.self) { width in
-            guard isSidebarVisible, width >= 230, width <= 420 else { return }
+            guard workspace.isSidebarVisible,
+                  width >= 230,
+                  width <= 420 else { return }
             sidebarWidth = width
         }
-        .animation(
-            .easeOut(duration: 0.12),
-            value: workspace.isCommandPalettePresented
-        )
-        .animation(
-            .easeOut(duration: 0.12),
-            value: workspace.isActionPalettePresented
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.width
+        } action: { width in
+            guard width > 0 else { return }
+            windowWidth = width
+        }
+        .fileImporter(
+            isPresented: folderImporterIsPresented,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: true
+        ) { result in
+            workspace.dismissFolderImporter()
+            switch result {
+            case let .success(urls):
+                workspace.addRootDirectories(urls)
+            case let .failure(error):
+                guard (error as NSError).code != NSUserCancelledError else {
+                    return
+                }
+                workspace.presentFolderImportError(error)
+            }
+        }
+        .alert(item: alertState) { state in
+            workspaceAlert(state)
+        }
+        .sheet(item: renameRequest) { request in
+            TerminalRenameSheet(request: request)
+                .environmentObject(workspace)
+        }
+    }
+
+    private func workspaceAlert(_ state: WorkspaceAlertState) -> Alert {
+        guard let confirmationTitle = state.confirmationTitle,
+              state.action != nil else {
+            return Alert(
+                title: Text(state.title),
+                message: Text(state.message),
+                dismissButton: .default(Text("好")) {
+                    workspace.dismissAlert()
+                }
+            )
+        }
+        return Alert(
+            title: Text(state.title),
+            message: Text(state.message),
+            primaryButton: .destructive(Text(confirmationTitle)) {
+                workspace.confirmAlert(state)
+            },
+            secondaryButton: .cancel {
+                workspace.dismissAlert()
+            }
         )
     }
 }
 
-private struct FileSidebar: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
-    @FocusState private var isFileTreeFocused: Bool
+private struct TerminalRenameSheet: View {
+    @EnvironmentObject private var workspace: AppModel
+    @FocusState private var isNameFocused: Bool
+    let request: TerminalRenameRequest
+    @State private var title: String
+
+    init(request: TerminalRenameRequest) {
+        self.request = request
+        _title = State(initialValue: request.initialTitle)
+    }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(
-                        Array(workspace.rootNodes.enumerated()),
-                        id: \.element.id
-                    ) { index, rootNode in
-                        DirectoryTreeNode(
-                            node: rootNode,
-                            depth: 0,
-                            showsWorkspaceFilter: index == 0,
-                            focusFileTree: { isFileTreeFocused = true }
-                        )
-                        .id(rootNode.id)
-                    }
+        VStack(alignment: .leading, spacing: 16) {
+            Text("重命名终端")
+                .font(.headline)
+
+            TextField("终端名称", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .focused($isNameFocused)
+                .onSubmit(save)
+
+            Text("留空即可恢复跟随前台程序的标题。")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel) {
+                    workspace.dismissRenameRequest()
                 }
-                .padding(.vertical, 6)
+                .keyboardShortcut(.cancelAction)
+
+                Button("保存", action: save)
+                    .keyboardShortcut(.defaultAction)
             }
-            .onChange(of: workspace.selectedTreeItemURL) { _, url in
-                guard let url else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear {
+            isNameFocused = true
+        }
+    }
+
+    private func save() {
+        workspace.saveTerminalRename(request, title: title)
+    }
+}
+
+private struct DirectorySidebar: View {
+    @EnvironmentObject private var workspace: AppModel
+
+    private var selection: Binding<String?> {
+        Binding(
+            get: {
+                workspace.activeDirectory?.standardizedFileURL.path
+            },
+            set: { path in
+                guard let path,
+                      let folder = workspace.folders.first(where: {
+                          $0.id == path
+                      }) else { return }
+                workspace.activateTerminal(for: folder.url)
+            }
+        )
+    }
+
+    private var folders: Binding<[WorkspaceFolder]> {
+        Binding(
+            get: { workspace.folders },
+            set: workspace.setFolderOrder
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("文件夹")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+
+            Divider()
+
+            ScrollViewReader { proxy in
+                List(
+                    folders,
+                    editActions: .move,
+                    selection: selection
+                ) { folder in
+                    DirectoryRow(
+                        folder: folder.wrappedValue,
+                        parentPath: disambiguatingParentPath(
+                            for: folder.wrappedValue
+                        )
+                    )
+                    .tag(folder.wrappedValue.id)
+                    .id(folder.wrappedValue.id)
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .onChange(of: workspace.activeDirectory) { _, url in
+                    guard let url else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
+                    }
                 }
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
-        .focusable()
-        .focused($isFileTreeFocused)
-        .focusEffectDisabled()
-        .onKeyPress(.space) {
-            guard workspace.selectedFileURL != nil else { return .ignored }
-            workspace.toggleSelectedFilePreview()
-            return .handled
+    }
+
+    private func disambiguatingParentPath(
+        for folder: WorkspaceFolder
+    ) -> String? {
+        let name = folder.url.lastPathComponent
+        guard workspace.folders.filter({
+            $0.url.lastPathComponent == name
+        }).count > 1 else { return nil }
+
+        let parent = folder.url.deletingLastPathComponent().path
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        if parent == home { return "~" }
+        if parent.hasPrefix(home + "/") {
+            return "~" + parent.dropFirst(home.count)
         }
-        .onKeyPress(.escape) {
-            guard QuickLookPreviewController.shared.isPresented else {
-                return .ignored
-            }
-            QuickLookPreviewController.shared.closePreview()
-            return .handled
-        }
-        .onKeyPress(.upArrow) {
-            workspace.moveTreeSelection(offset: -1)
-                ? .handled
-                : .ignored
-        }
-        .onKeyPress(.downArrow) {
-            workspace.moveTreeSelection(offset: 1)
-                ? .handled
-                : .ignored
-        }
-        .onKeyPress(.leftArrow) {
-            workspace.collapseOrSelectParentTreeDirectory()
-                ? .handled
-                : .ignored
-        }
-        .onKeyPress(.rightArrow) {
-            workspace.expandOrEnterSelectedTreeDirectory()
-                ? .handled
-                : .ignored
-        }
-        .onKeyPress(.return) {
-            workspace.openSelectedTreeItemInTerminal()
-                ? .handled
-                : .ignored
-        }
+        return parent
     }
 }
 
-private struct DirectoryTreeNode: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
-    @ObservedObject var node: FileNode
-    let depth: Int
-    let showsWorkspaceFilter: Bool
-    let focusFileTree: () -> Void
-    @State private var isHovering = false
+private struct DirectoryRow: View {
+    @EnvironmentObject private var workspace: AppModel
+    let folder: WorkspaceFolder
+    let parentPath: String?
 
-    private var isExpanded: Bool {
-        workspace.isDirectoryExpanded(node.url)
-    }
-
-    private var isSelected: Bool {
-        workspace.selectedTreeItemURL?.standardizedFileURL
-            == node.url.standardizedFileURL
+    private var folderPath: String {
+        folder.url.standardizedFileURL.path
     }
 
     private var isActive: Bool {
         workspace.activeDirectory?.standardizedFileURL
-            == node.url.standardizedFileURL
-    }
-
-    private var ownsTerminal: Bool {
-        workspace.hasTerminalSession(exactlyAt: node.url)
-    }
-
-    private var terminalCount: Int {
-        workspace.terminalSessionCount(exactlyAt: node.url)
-    }
-
-    private var visibleChildren: [FileNode] {
-        guard workspace.showTerminalDirectoriesOnly else { return node.children }
-        return node.children.filter {
-            $0.isDirectory && workspace.hasTerminalSession(in: $0.url)
-        }
-    }
-
-    private var canExpand: Bool {
-        !workspace.showTerminalDirectoriesOnly
-            || workspace.hasTerminalSessionDescendant(in: node.url)
+            == folder.url.standardizedFileURL
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 6) {
-                Button {
-                    workspace.selectTreeNode(node)
-                    focusFileTree()
-                    guard canExpand else { return }
-                    let expanded = !isExpanded
-                    workspace.setDirectoryExpanded(expanded, url: node.url)
-                    if expanded {
-                        node.loadChildren()
-                    }
-                } label: {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 12, height: 20)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .opacity(canExpand ? 1 : 0)
-                .allowsHitTesting(canExpand)
-                .accessibilityLabel(isExpanded ? "收起目录" : "展开目录")
+        HStack(spacing: 8) {
+            Image(systemName: isActive ? "folder.fill" : "folder")
+                .foregroundStyle(isActive ? Color.accentColor : .secondary)
 
-                Image(systemName: isExpanded ? "folder.fill" : "folder")
-                    .foregroundStyle(isSelected || isActive
-                        ? Color.accentColor
-                        : Color.secondary)
-
-                Text(node.url.lastPathComponent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(folder.url.lastPathComponent)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(node.url.path)
 
-                Button {
-                    focusFileTree()
-                    workspace.activateTerminal(for: node.url)
-                } label: {
-                    Image(systemName: "arrow.right.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(ownsTerminal ? "切换到此目录的终端" : "在此目录新建终端")
-                .accessibilityLabel(ownsTerminal
-                    ? "切换到 \(node.url.lastPathComponent) 的终端"
-                    : "在 \(node.url.lastPathComponent) 新建终端")
-                .opacity(isHovering ? 1 : 0)
-                .allowsHitTesting(isHovering)
-
-                Spacer(minLength: 4)
-
-                if ownsTerminal {
-                    Button {
-                        workspace.activateTerminal(for: node.url)
-                    } label: {
-                        HStack(spacing: 2) {
-                            Image(systemName: "terminal.fill")
-                            if terminalCount > 1 {
-                                Text("\(terminalCount)")
-                                    .font(.system(size: 9, weight: .semibold))
-                            }
-                        }
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("切换到此目录已有的终端")
-                    .accessibilityLabel("此目录有 \(terminalCount) 个终端")
-                }
-
-                if showsWorkspaceFilter {
-                    Button {
-                        if !workspace.showTerminalDirectoriesOnly {
-                            workspace.selectTreeNode(node)
-                        }
-                        workspace.showTerminalDirectoriesOnly.toggle()
-                    } label: {
-                        Image(systemName: workspace.showTerminalDirectoriesOnly
-                            ? "line.3.horizontal.decrease.circle.fill"
-                            : "line.3.horizontal.decrease.circle")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(workspace.showTerminalDirectoriesOnly
-                            ? Color.accentColor
-                            : Color.secondary)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(workspace.showTerminalDirectoriesOnly
-                        ? "显示全部文件"
-                        : "仅显示已打开终端的目录")
-                    .accessibilityLabel(workspace.showTerminalDirectoriesOnly
-                        ? "显示全部文件"
-                        : "仅显示已打开终端的目录")
-                }
-            }
-            .padding(.leading, CGFloat(depth) * 16 + 8)
-            .padding(.trailing, 8)
-            .frame(height: 28)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(isSelected
-                        ? Color.accentColor.opacity(0.2)
-                        : isActive
-                            ? Color.accentColor.opacity(0.1)
-                            : Color.clear)
-            )
-            .simultaneousGesture(TapGesture().onEnded {
-                workspace.selectTreeNode(node)
-                focusFileTree()
-            })
-            .onHover { hovering in
-                isHovering = hovering
-            }
-            .animation(.easeOut(duration: 0.12), value: isHovering)
-            .onAppear {
-                if workspace.showTerminalDirectoriesOnly,
-                   workspace.hasTerminalSessionDescendant(in: node.url) {
-                    workspace.setDirectoryExpanded(true, url: node.url)
-                }
-                if isExpanded {
-                    node.loadChildren()
-                }
-            }
-            .onChange(of: workspace.showTerminalDirectoriesOnly) { _, filtered in
-                if filtered,
-                   workspace.hasTerminalSessionDescendant(in: node.url) {
-                    workspace.setDirectoryExpanded(true, url: node.url)
-                    node.loadChildren()
-                }
-            }
-
-            if isExpanded {
-                if let errorMessage = node.errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
+                if let parentPath {
+                    Text(parentPath)
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .padding(.leading, CGFloat(depth + 1) * 16 + 30)
-                        .padding(.vertical, 4)
-                } else if node.isLoading && visibleChildren.isEmpty {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text("正在读取…")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, CGFloat(depth + 1) * 16 + 30)
-                    .padding(.vertical, 4)
-                } else if visibleChildren.isEmpty,
-                          !workspace.showTerminalDirectoriesOnly {
-                    Text("空目录")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, CGFloat(depth + 1) * 16 + 30)
-                        .padding(.vertical, 4)
-                } else {
-                    ForEach(visibleChildren) { child in
-                        if child.isDirectory {
-                            DirectoryTreeNode(
-                                node: child,
-                                depth: depth + 1,
-                                showsWorkspaceFilter: false,
-                                focusFileTree: focusFileTree
-                            )
-                        } else {
-                            FileTreeRow(
-                                node: child,
-                                depth: depth + 1,
-                                focusFileTree: focusFileTree
-                            )
-                        }
-                    }
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
+            }
+
+            Spacer(minLength: 4)
+
+            if workspace.folderNeedsAgentAttention(folder.url) {
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel("Agent needs attention")
+                    .accessibilityIdentifier(
+                        "agent-attention-folder:\(folderPath)"
+                    )
             }
         }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: parentPath == nil ? 24 : 36,
+            alignment: .leading
+        )
+        .contentShape(Rectangle())
+        .help(folder.url.path)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("切换到文件夹 \(folder.url.lastPathComponent)")
+        .accessibilityIdentifier(
+            "folder-row:\(folderPath)"
+        )
         .contextMenu {
-            if workspace.isRootDirectory(node.url) {
-                Button("从工作区移除文件夹", role: .destructive) {
-                    workspace.requestRemoveRootDirectory(node.url)
-                }
+            Button("Reveal in Finder") {
+                _ = NSWorkspace.shared.open(folder.url)
+            }
+
+            Divider()
+
+            Button("Remove Folder", role: .destructive) {
+                workspace.requestRemoveRootDirectory(folder.url)
             }
         }
     }
 }
 
 private struct WorkspaceEmptyView: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
+    @EnvironmentObject private var workspace: AppModel
 
     var body: some View {
         VStack(spacing: 14) {
@@ -410,14 +382,14 @@ private struct WorkspaceEmptyView: View {
                 .font(.system(size: 42, weight: .light))
                 .foregroundStyle(.secondary)
 
-            Text("添加工作目录")
+            Text("添加文件夹")
                 .font(.title2.weight(.semibold))
 
-            Text("添加一个或多个互不包含的文件夹，开始使用终端工作区。")
+            Text("添加一个或多个文件夹，开始使用 Space。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
-            Button("添加目录…") {
+            Button("添加文件夹…") {
                 workspace.chooseRootDirectory()
             }
             .controlSize(.large)
@@ -436,8 +408,8 @@ private struct SidebarWidthPreferenceKey: PreferenceKey {
     }
 }
 
-private struct WindowFrameAutosaver: NSViewRepresentable {
-    let title: String
+private struct WindowConfigurator: NSViewRepresentable {
+    let sidebarIsVisible: Bool
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -450,59 +422,19 @@ private struct WindowFrameAutosaver: NSViewRepresentable {
     }
 
     private func configureWindow(for view: NSView) {
-        let title = title
+        _ = sidebarIsVisible
         DispatchQueue.main.async { [weak view] in
-            view?.window?.setFrameAutosaveName("Space.MainWindow")
-            view?.window?.title = title
+            guard let window = view?.window else { return }
+            window.setFrameAutosaveName("Space.MainWindow")
+            window.tabbingMode = .disallowed
+            window.title = ""
+            window.titleVisibility = .hidden
         }
-    }
-}
-
-private struct FileTreeRow: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
-    let node: FileNode
-    let depth: Int
-    let focusFileTree: () -> Void
-
-    private var isSelected: Bool {
-        workspace.selectedTreeItemURL?.standardizedFileURL
-            == node.url.standardizedFileURL
-    }
-
-    var body: some View {
-        Button {
-            workspace.selectFile(node.url)
-            focusFileTree()
-        } label: {
-            HStack(spacing: 6) {
-                Color.clear.frame(width: 12, height: 20)
-                Image(systemName: "doc")
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
-                Text(node.url.lastPathComponent)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-            }
-            .padding(.leading, CGFloat(depth) * 16 + 8)
-            .padding(.trailing, 8)
-            .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .id(node.url.standardizedFileURL.path)
-        .help("\(node.url.path)\n回车在终端查看 · 空格快速预览")
-        .accessibilityLabel(
-            "\(node.url.lastPathComponent)，回车在终端查看，空格快速预览"
-        )
     }
 }
 
 #Preview {
     ContentView()
-        .environmentObject(WorkspaceModel())
+        .environmentObject(AppModel())
         .frame(width: 1_100, height: 720)
 }

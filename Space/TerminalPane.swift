@@ -3,7 +3,7 @@ import GhosttyTerminal
 import SwiftUI
 
 struct TerminalWorkspacePane: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
+    @EnvironmentObject private var workspace: AppModel
 
     var body: some View {
         ZStack {
@@ -22,7 +22,7 @@ struct TerminalWorkspacePane: View {
                     Image(systemName: "terminal")
                         .font(.system(size: 28))
                         .foregroundStyle(.tertiary)
-                    Text("此目录没有打开的终端")
+                    Text("此文件夹没有打开的终端")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("新建终端") {
@@ -37,7 +37,7 @@ struct TerminalWorkspacePane: View {
 }
 
 private struct TerminalSplitTree: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
+    @EnvironmentObject private var workspace: AppModel
     let node: TerminalSplitNode
     let isVisible: Bool
 
@@ -63,7 +63,12 @@ private struct TerminalSplitTree: View {
                     workspace?.selectTerminal(id)
                 }
                 .id(session.id)
-                .frame(minWidth: 160, minHeight: 100)
+                .frame(
+                    minWidth: 160,
+                    maxWidth: .infinity,
+                    minHeight: 100,
+                    maxHeight: .infinity
+                )
                 .overlay {
                     Rectangle()
                         .stroke(
@@ -74,158 +79,435 @@ private struct TerminalSplitTree: View {
                         )
                         .allowsHitTesting(false)
                 }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("terminal-split-pane")
             )
-        case let .split(_, axis, _, first, second):
-            switch axis {
-            case .horizontal:
-                return AnyView(
-                    HSplitView {
-                        TerminalSplitTree(node: first, isVisible: isVisible)
-                        TerminalSplitTree(node: second, isVisible: isVisible)
-                    }
+        case let .split(id, axis, ratio, first, second):
+            return AnyView(
+                TerminalSplitContainer(
+                    splitID: id,
+                    axis: axis,
+                    ratio: ratio,
+                    first: first,
+                    second: second,
+                    isVisible: isVisible
                 )
-            case .vertical:
-                return AnyView(
-                    VSplitView {
-                        TerminalSplitTree(node: first, isVisible: isVisible)
-                        TerminalSplitTree(node: second, isVisible: isVisible)
+            )
+        }
+    }
+}
+
+private struct TerminalSplitContainer: View {
+    @EnvironmentObject private var workspace: AppModel
+    let splitID: UUID
+    let axis: TerminalSplitAxis
+    let ratio: CGFloat
+    let first: TerminalSplitNode
+    let second: TerminalSplitNode
+    let isVisible: Bool
+    @State private var displayedRatio: CGFloat
+
+    private let dividerThickness: CGFloat = 5
+
+    init(
+        splitID: UUID,
+        axis: TerminalSplitAxis,
+        ratio: CGFloat,
+        first: TerminalSplitNode,
+        second: TerminalSplitNode,
+        isVisible: Bool
+    ) {
+        self.splitID = splitID
+        self.axis = axis
+        self.ratio = ratio
+        self.first = first
+        self.second = second
+        self.isVisible = isVisible
+        _displayedRatio = State(initialValue: ratio)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let containerLength = primaryLength(in: geometry.size)
+            let availableLength = max(
+                containerLength - dividerThickness,
+                0
+            )
+            let effectiveRatio = clampedRatio(
+                displayedRatio,
+                availableLength: availableLength
+            )
+            let firstLength = availableLength * effectiveRatio
+            let secondLength = availableLength - firstLength
+
+            Group {
+                switch axis {
+                case .horizontal:
+                    HStack(spacing: 0) {
+                        splitChild(first)
+                            .frame(width: firstLength)
+                        divider(containerLength: containerLength)
+                            .frame(width: dividerThickness)
+                        splitChild(second)
+                            .frame(width: secondLength)
                     }
+                case .vertical:
+                    VStack(spacing: 0) {
+                        splitChild(first)
+                            .frame(height: firstLength)
+                        divider(containerLength: containerLength)
+                            .frame(height: dividerThickness)
+                        splitChild(second)
+                            .frame(height: secondLength)
+                    }
+                }
+            }
+            .coordinateSpace(name: splitID)
+        }
+        .onChange(of: ratio) { _, newRatio in
+            displayedRatio = newRatio
+        }
+    }
+
+    private func splitChild(_ node: TerminalSplitNode) -> some View {
+        TerminalSplitTree(node: node, isVisible: isVisible)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+    }
+
+    private func divider(containerLength: CGFloat) -> some View {
+        ZStack {
+            Color(nsColor: .windowBackgroundColor)
+
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(
+                    width: axis == .horizontal ? 1 : nil,
+                    height: axis == .vertical ? 1 : nil
                 )
+        }
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(splitID))
+                .onChanged { value in
+                    let length = primaryLength(in: value.location)
+                    displayedRatio = ratioForDividerLocation(
+                        length,
+                        containerLength: containerLength
+                    )
+                }
+                .onEnded { _ in
+                    workspace.updateSplitRatio(displayedRatio, for: splitID)
+                }
+        )
+        .accessibilityElement()
+        .accessibilityLabel(axis == .horizontal ? "调整左右分屏" : "调整上下分屏")
+        .accessibilityIdentifier("terminal-split-divider")
+    }
+
+    private func primaryLength(in size: CGSize) -> CGFloat {
+        axis == .horizontal ? size.width : size.height
+    }
+
+    private func primaryLength(in point: CGPoint) -> CGFloat {
+        axis == .horizontal ? point.x : point.y
+    }
+
+    private func ratioForDividerLocation(
+        _ location: CGFloat,
+        containerLength: CGFloat
+    ) -> CGFloat {
+        let availableLength = max(containerLength - dividerThickness, 1)
+        return clampedRatio(
+            (location - dividerThickness / 2) / availableLength,
+            availableLength: availableLength
+        )
+    }
+
+    private func clampedRatio(
+        _ proposedRatio: CGFloat,
+        availableLength: CGFloat
+    ) -> CGFloat {
+        guard availableLength > 0 else { return 0.5 }
+        let minimumLength: CGFloat = axis == .horizontal ? 160 : 100
+        let minimumRatio = min(minimumLength / availableLength, 0.5)
+        return min(max(proposedRatio, minimumRatio), 1 - minimumRatio)
+    }
+}
+
+struct TerminalTitleBarContent: View {
+    @EnvironmentObject private var workspace: AppModel
+    let maximumTabStripWidth: CGFloat
+
+    @ViewBuilder
+    var body: some View {
+        if workspace.activeDirectoryTabs.count == 1,
+           let session = workspace.activeTerminalSession {
+            TerminalTitleBarTitle(session: session)
+        } else {
+            TerminalTabStrip(maximumWidth: maximumTabStripWidth)
+        }
+    }
+}
+
+private struct TerminalTitleBarTitle: View {
+    @EnvironmentObject private var workspace: AppModel
+    @ObservedObject var session: TerminalSession
+    @ObservedObject private var terminal: TerminalViewState
+    @State private var foregroundProcessName: String?
+
+    init(session: TerminalSession) {
+        _session = ObservedObject(wrappedValue: session)
+        _terminal = ObservedObject(wrappedValue: session.terminal)
+        _foregroundProcessName = State(initialValue: session.currentProcessName)
+    }
+
+    private var title: String {
+        session.displayTitle(
+            terminalTitle: terminal.title,
+            foregroundProcessName: foregroundProcessName
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .frame(maxWidth: 240)
+        .frame(height: 28)
+        .help(title)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("terminal-title")
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                workspace.promptRenameTerminal(session.id)
+            }
+        )
+        .task {
+            while !Task.isCancelled {
+                foregroundProcessName = session.currentProcessName
+                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }
 }
 
 struct TerminalTabStrip: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
+    @EnvironmentObject private var workspace: AppModel
+    let maximumWidth: CGFloat
+    @State private var contentWidth: CGFloat = 1
+
+    private let newTabButtonWidth: CGFloat = 28
+    private let spacing: CGFloat = 4
+
+    private var width: CGFloat {
+        min(contentWidth + spacing + newTabButtonWidth, maximumWidth)
+    }
+
+    private var scrollWidth: CGFloat {
+        max(1, width - spacing - newTabButtonWidth)
+    }
 
     var body: some View {
-        HStack(spacing: 6) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(workspace.activeDirectoryTabs) { tab in
-                        if let session = workspace.terminalSessions.first(where: {
-                            $0.id == tab.focusedTerminalID
-                        }) {
-                            TerminalTab(
-                                tabID: tab.id,
-                                paneCount: tab.terminalIDs.count,
-                                session: session,
-                                isActive: workspace.activeTerminalTab?.id == tab.id
-                            ) {
-                                workspace.selectTab(tab.id)
-                            } close: {
-                                workspace.requestCloseTab(tab.id)
-                            }
+        HStack(spacing: spacing) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    tabRow
+                        .fixedSize(horizontal: true, vertical: false)
+                        .onGeometryChange(for: CGFloat.self) { geometry in
+                            geometry.size.width
+                        } action: { measuredWidth in
+                            guard measuredWidth > 0 else { return }
+                            contentWidth = measuredWidth
                         }
-                    }
+                }
+                .frame(width: scrollWidth)
+                .onAppear {
+                    scrollToActiveTab(using: proxy, animated: false)
+                }
+                .onChange(of: workspace.activeTerminalTab?.id) { _, _ in
+                    scrollToActiveTab(using: proxy, animated: true)
+                }
+                .onChange(of: maximumWidth) { _, _ in
+                    scrollToActiveTab(using: proxy, animated: false)
                 }
             }
 
             Button {
-                if let directory = workspace.activeDirectory {
-                    workspace.openNewTerminal(for: directory)
-                }
+                guard let directory = workspace.activeDirectory else { return }
+                workspace.openNewTerminal(for: directory)
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: newTabButtonWidth, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("在当前目录新建终端")
-            .accessibilityLabel("新建终端")
+            .foregroundStyle(.secondary)
+            .help("New Terminal (⌘T)")
+            .accessibilityLabel("New Terminal")
+            .accessibilityIdentifier("new-terminal-tab-button")
         }
+        .frame(width: width)
         .frame(height: 28)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("terminal-tabs-container")
+    }
+
+    private var tabRow: some View {
+        let tabs = workspace.activeDirectoryTabs
+
+        return HStack(spacing: 4) {
+            ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
+                if let session = workspace.terminalSessions.first(where: {
+                    $0.id == tab.focusedTerminalID
+                }) {
+                    TerminalTab(
+                        tabID: tab.id,
+                        session: session,
+                        isActive: workspace.activeTerminalTab?.id == tab.id,
+                        shortcutLabel: shortcutLabel(
+                            at: index,
+                            tabCount: tabs.count
+                        )
+                    ) {
+                        workspace.selectTab(tab.id)
+                    } close: {
+                        workspace.requestCloseTab(tab.id)
+                    }
+                    .id(tab.id)
+                }
+            }
+        }
+    }
+
+    private func shortcutLabel(at index: Int, tabCount: Int) -> String? {
+        if index < 8 { return "⌘\(index + 1)" }
+        if index == tabCount - 1 { return "⌘9" }
+        return nil
+    }
+
+    private func scrollToActiveTab(
+        using proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
+        guard let tabID = workspace.activeTerminalTab?.id else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.15)) {
+                proxy.scrollTo(tabID, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(tabID, anchor: .center)
+        }
     }
 }
 
 private struct TerminalTab: View {
-    @EnvironmentObject private var workspace: WorkspaceModel
+    @EnvironmentObject private var workspace: AppModel
     let tabID: UUID
-    let paneCount: Int
     @ObservedObject var session: TerminalSession
+    @ObservedObject private var terminal: TerminalViewState
     let isActive: Bool
+    let shortcutLabel: String?
     let select: () -> Void
     let close: () -> Void
-    @State private var isOutputActive: Bool
     @State private var foregroundProcessName: String?
     @State private var isHovering = false
 
     init(
         tabID: UUID,
-        paneCount: Int,
         session: TerminalSession,
         isActive: Bool,
+        shortcutLabel: String?,
         select: @escaping () -> Void,
         close: @escaping () -> Void
     ) {
         self.tabID = tabID
-        self.paneCount = paneCount
         _session = ObservedObject(wrappedValue: session)
+        _terminal = ObservedObject(wrappedValue: session.terminal)
         self.isActive = isActive
+        self.shortcutLabel = shortcutLabel
         self.select = select
         self.close = close
-        _isOutputActive = State(initialValue: false)
-        _foregroundProcessName = State(initialValue: nil)
+        _foregroundProcessName = State(initialValue: session.currentProcessName)
     }
 
     private var title: String {
-        session.displayTitle(foregroundProcessName: foregroundProcessName)
+        session.displayTitle(
+            terminalTitle: terminal.title,
+            foregroundProcessName: foregroundProcessName
+        )
     }
 
     var body: some View {
-        HStack(spacing: 4) {
+        ZStack(alignment: .trailing) {
             Button(action: select) {
-                HStack(spacing: 5) {
-                    if isOutputActive {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.65)
-                            .frame(width: 10, height: 10)
-                            .help("终端正在运行 \(title)")
-                            .accessibilityLabel("终端持续输出")
-                    } else {
-                        Image(systemName: "terminal")
-                            .font(.system(size: 10, weight: .semibold))
-                    }
+                HStack(spacing: 6) {
                     Text(title)
-                        .font(.caption)
+                        .font(.system(
+                            size: 12,
+                            weight: isActive ? .semibold : .regular
+                        ))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if paneCount > 1 {
-                        Text("×\(paneCount)")
-                            .font(.caption2.monospacedDigit())
+
+                    if workspace.tabNeedsAgentAttention(tabID) {
+                        Circle()
+                            .fill(.orange)
+                            .frame(width: 7, height: 7)
+                            .accessibilityLabel("Agent needs attention")
+                            .accessibilityIdentifier(
+                                "agent-attention-tab:\(tabID.uuidString)"
+                            )
+                    }
+
+                    if let shortcutLabel {
+                        Text(shortcutLabel)
+                            .font(.system(size: 10).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+
+                    Color.clear
+                        .frame(width: 16, height: 16)
                 }
+                .padding(.leading, 10)
+                .padding(.trailing, 6)
+                .frame(maxWidth: 180, minHeight: 28, maxHeight: 28)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
-            if isActive || isHovering {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("关闭终端标签")
-                .accessibilityLabel("关闭终端标签 \(title)")
-                .transition(.opacity)
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .semibold))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("关闭终端标签")
+            .accessibilityLabel("关闭终端标签 \(title)")
+            .padding(.trailing, 5)
+            .opacity(isActive || isHovering ? 1 : 0)
+            .allowsHitTesting(isActive || isHovering)
         }
         .foregroundStyle(isActive ? Color.primary : Color.secondary)
-        .padding(.leading, 9)
-        .padding(.trailing, (isActive || isHovering) ? 4 : 9)
-        .frame(maxWidth: 190, minHeight: 26, maxHeight: 26)
         .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isActive
-                    ? Color(nsColor: .selectedControlColor).opacity(0.25)
-                    : Color.clear)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(isHovering ? Color.primary.opacity(0.06) : Color.clear)
         )
+        .overlay(alignment: .bottom) {
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(height: 2)
+                .padding(.horizontal, 6)
+                .opacity(isActive ? 1 : 0)
+        }
         .help(title)
         .accessibilityLabel(title)
         .onHover { isHovering = $0 }
@@ -243,23 +525,21 @@ private struct TerminalTab: View {
             }
         )
         .contextMenu {
-            Button("重命名…") {
+            Button("Rename Tab…") {
                 workspace.promptRenameTerminal(session.id)
             }
-            Button("复制终端") {
+            Button("Duplicate Tab") {
                 workspace.selectTerminal(session.id)
                 workspace.duplicateActiveTerminal()
             }
             Divider()
-            Button("关闭标签") {
+            Button("Close Tab") {
                 workspace.requestCloseTab(tabID)
             }
         }
         .task {
             while !Task.isCancelled {
                 foregroundProcessName = session.currentProcessName
-                isOutputActive = session.isRunningForegroundProgram
-
                 try? await Task.sleep(for: .milliseconds(250))
             }
         }
@@ -298,17 +578,20 @@ private struct GhosttyTerminalPane: View {
 
 private struct TerminalSearchBar: View {
     @ObservedObject var session: TerminalSession
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TerminalSearchField(
-                text: $session.searchQuery,
-                onSubmit: { session.navigateSearch(forward: true) },
-                onCancel: { session.dismissSearch() }
-            )
+            TextField("查找终端内容", text: $session.searchQuery)
+                .textFieldStyle(.plain)
+                .focused($isSearchFocused)
+                .accessibilityIdentifier("terminal-search-field")
+                .onSubmit {
+                    session.navigateSearch(forward: true)
+                }
                 .frame(width: 210)
                 .onChange(of: session.searchQuery) { _, query in
                     session.updateSearch(query)
@@ -347,6 +630,14 @@ private struct TerminalSearchBar: View {
         .onAppear {
             session.updateSearch(session.searchQuery)
         }
+        .task(id: session.searchFocusRequest) {
+            // Let SwiftUI install the TextField in its AppKit hierarchy before
+            // asking it to become first responder. This also handles repeated
+            // Command-F presses while the search bar is already visible.
+            await Task.yield()
+            guard session.isSearchPresented else { return }
+            isSearchFocused = true
+        }
         .onExitCommand {
             session.dismissSearch()
         }
@@ -368,87 +659,6 @@ private struct TerminalSearchBar: View {
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .help(help)
-    }
-}
-
-private struct TerminalSearchField: NSViewRepresentable {
-    @Binding var text: String
-    let onSubmit: () -> Void
-    let onCancel: () -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
-
-    func makeNSView(context: Context) -> AutoFocusTextField {
-        let field = AutoFocusTextField()
-        field.placeholderString = "查找终端内容"
-        field.isBezeled = false
-        field.drawsBackground = false
-        field.focusRingType = .none
-        field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.delegate = context.coordinator
-        return field
-    }
-
-    func updateNSView(_ field: AutoFocusTextField, context: Context) {
-        context.coordinator.parent = self
-        if field.stringValue != text {
-            field.stringValue = text
-        }
-        field.requestFocusIfPossible()
-    }
-
-    final class Coordinator: NSObject, NSTextFieldDelegate {
-        var parent: TerminalSearchField
-
-        init(parent: TerminalSearchField) {
-            self.parent = parent
-        }
-
-        func controlTextDidChange(_ notification: Notification) {
-            guard let field = notification.object as? NSTextField else { return }
-            parent.text = field.stringValue
-        }
-
-        func control(
-            _ control: NSControl,
-            textView: NSTextView,
-            doCommandBy commandSelector: Selector
-        ) -> Bool {
-            switch commandSelector {
-            case #selector(NSResponder.insertNewline(_:)):
-                parent.onSubmit()
-                return true
-            case #selector(NSResponder.cancelOperation(_:)):
-                parent.onCancel()
-                return true
-            default:
-                return false
-            }
-        }
-    }
-
-    final class AutoFocusTextField: NSTextField {
-        private var didRequestFocus = false
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            requestFocusIfPossible()
-        }
-
-        func requestFocusIfPossible() {
-            guard !didRequestFocus, window != nil else { return }
-            didRequestFocus = true
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.window else { return }
-                window.makeFirstResponder(self)
-                currentEditor()?.selectedRange = NSRange(
-                    location: stringValue.utf16.count,
-                    length: 0
-                )
-            }
-        }
     }
 }
 

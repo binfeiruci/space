@@ -4,6 +4,27 @@ import GhosttyTerminal
 import Testing
 @testable import Space
 
+private extension AppModel {
+    var activeDirectorySessions: [TerminalSession] {
+        guard let activeDirectory else { return [] }
+        let activePath = activeDirectory.standardizedFileURL.path
+        return terminalSessions.filter {
+            $0.directory.standardizedFileURL.path == activePath
+        }
+    }
+
+    func terminalSessionCount(exactlyAt directory: URL) -> Int {
+        let path = directory.standardizedFileURL.path
+        return terminalSessions.count {
+            $0.directory.standardizedFileURL.path == path
+        }
+    }
+
+    func hasTerminalSession(exactlyAt directory: URL) -> Bool {
+        terminalSessionCount(exactlyAt: directory) > 0
+    }
+}
+
 @Suite(.serialized)
 struct SpaceTests {
     private static let isolatedDefaultsSuiteName =
@@ -63,6 +84,26 @@ struct SpaceTests {
         ) == nil)
     }
 
+    @Test @MainActor
+    func terminalTabSelectionShortcutsRecognizeCommandDigits() {
+        #expect(TerminalTabSelectionShortcut.index(
+            characters: "1",
+            modifierFlags: .command
+        ) == 0)
+        #expect(TerminalTabSelectionShortcut.index(
+            characters: "9",
+            modifierFlags: .command
+        ) == 8)
+        #expect(TerminalTabSelectionShortcut.index(
+            characters: "0",
+            modifierFlags: .command
+        ) == nil)
+        #expect(TerminalTabSelectionShortcut.index(
+            characters: "1",
+            modifierFlags: [.command, .shift]
+        ) == nil)
+    }
+
     @Test
     func terminalSearchActionsUseGhosttyBindingSyntax() {
         #expect(TerminalSearchAction.update(query: "build failed")
@@ -74,43 +115,248 @@ struct SpaceTests {
         #expect(TerminalSearchAction.end == "end_search")
     }
 
-    @Test
-    func terminalFileViewerUsesGlowForMarkdownWithVimFallback() {
-        let file = URL(fileURLWithPath: "/tmp/Read Me.md")
-        let command = TerminalFileViewer.command(for: file)
+    @Test @MainActor
+    func presentingTerminalSearchAlwaysRequestsFieldFocus() throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let preferences = TerminalPreferences(
+            defaults: isolatedDefaults(workspace: directory)
+        )
+        let session = TerminalSession(
+            directory: directory,
+            preferences: preferences
+        )
 
-        #expect(command.contains("command -v glow"))
-        #expect(command.contains("VISUAL=vim EDITOR=vim glow --tui"))
-        #expect(command.contains("vim -- '/tmp/Read Me.md'"))
-        #expect(command.hasSuffix("fi; exit"))
-    }
+        #expect(!session.isSearchPresented)
+        #expect(session.searchFocusRequest == 0)
 
-    @Test
-    func terminalFileViewerUsesVimForCodeAndShellQuotesThePath() {
-        let file = URL(fileURLWithPath: "/tmp/it's $(unsafe).swift")
-        let command = TerminalFileViewer.command(for: file)
+        session.presentSearch()
+        #expect(session.isSearchPresented)
+        #expect(session.searchFocusRequest == 1)
 
-        #expect(!command.contains("glow"))
-        #expect(command == "vim -- '/tmp/it'\"'\"'s $(unsafe).swift'; exit")
+        session.presentSearch()
+        #expect(session.isSearchPresented)
+        #expect(session.searchFocusRequest == 2)
     }
 
     @Test @MainActor
-    func workspaceStartsEmptyWithoutRestoredDirectories() {
+    func agentAttentionAggregatesAndSelectingItsTabClearsIt() throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: directory),
+            initialRootURL: directory,
+            defaultRootURL: nil
+        )
+        let firstTerminalID = try #require(workspace.activeTerminalID)
+        let firstTabID = try #require(workspace.activeTerminalTab?.id)
+
+        workspace.openNewTerminal(for: directory)
+        let secondTerminalID = try #require(workspace.activeTerminalID)
+        let firstSession = try #require(workspace.terminalSessions.first {
+            $0.id == firstTerminalID
+        })
+        firstSession.terminal.terminalDidRequestDesktopNotification(
+            title: "Codex",
+            body: "Input required"
+        )
+
+        #expect(
+            workspace.agentAttentionByTerminalID[firstTerminalID]?.title
+                == "Codex"
+        )
+        #expect(workspace.tabNeedsAgentAttention(firstTabID))
+        #expect(workspace.folderNeedsAgentAttention(directory))
+        #expect(workspace.activeTerminalID == secondTerminalID)
+
+        workspace.selectTab(firstTabID)
+
+        #expect(workspace.activeTerminalID == firstTerminalID)
+        #expect(workspace.agentAttentionByTerminalID[firstTerminalID] == nil)
+        #expect(!workspace.tabNeedsAgentAttention(firstTabID))
+        #expect(!workspace.folderNeedsAgentAttention(directory))
+    }
+
+    @Test @MainActor
+    func agentAttentionNavigatesToTheExactSplitAndFolder() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        let firstFolder = container.appendingPathComponent(
+            "First",
+            isDirectory: true
+        )
+        let secondFolder = container.appendingPathComponent(
+            "Second",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: firstFolder,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondFolder,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: container) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: container),
+            initialRootURL: firstFolder,
+            defaultRootURL: nil
+        )
+        workspace.addRootDirectory(secondFolder, activate: true)
+        let targetTerminalID = try #require(workspace.activeTerminalID)
+        workspace.splitActiveTerminal(direction: .right)
+        let otherSplitID = try #require(workspace.activeTerminalID)
+        #expect(targetTerminalID != otherSplitID)
+
+        workspace.activateTerminal(for: firstFolder)
+        workspace.receiveAgentAttention(
+            AgentAttentionNotification(title: "Codex", body: "Approval needed"),
+            from: targetTerminalID,
+            terminalIsFocused: false,
+            applicationIsActive: false
+        )
+        workspace.activateTerminal(for: secondFolder)
+
+        #expect(workspace.activeDirectory == secondFolder.standardizedFileURL)
+        #expect(workspace.activeTerminalID == targetTerminalID)
+        #expect(workspace.agentAttentionByTerminalID[targetTerminalID] == nil)
+    }
+
+    @Test @MainActor
+    func visibleAgentNotificationDoesNotCreateAttention() throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: directory),
+            initialRootURL: directory,
+            defaultRootURL: nil
+        )
+        let terminalID = try #require(workspace.activeTerminalID)
+        let notification = AgentAttentionNotification(
+            title: "Codex",
+            body: "Input required"
+        )
+
+        workspace.receiveAgentAttention(
+            notification,
+            from: terminalID,
+            terminalIsFocused: true,
+            applicationIsActive: true
+        )
+        #expect(workspace.agentAttentionByTerminalID.isEmpty)
+
+        workspace.receiveAgentAttention(
+            notification,
+            from: terminalID,
+            terminalIsFocused: true,
+            applicationIsActive: false
+        )
+        #expect(workspace.agentAttentionByTerminalID[terminalID] == notification)
+    }
+
+    @Test @MainActor
+    func folderImporterPresentationIsDrivenByWorkspaceState() {
         defer { removeIsolatedDefaults() }
         let defaults = isolatedDefaults(
             workspace: FileManager.default.temporaryDirectory
         )
-
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: defaults,
-            watchesFiles: false
+            defaultRootURL: nil
         )
 
+        #expect(!workspace.isFolderImporterPresented)
+        workspace.chooseRootDirectory()
+        #expect(workspace.isFolderImporterPresented)
+        workspace.dismissFolderImporter()
+        #expect(!workspace.isFolderImporterPresented)
+    }
+
+    @Test @MainActor
+    func swiftUIPresentationsCommitRenameAndConfirmedRemoval() throws {
+        defer { removeIsolatedDefaults() }
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let defaults = isolatedDefaults(workspace: folder)
+        let workspace = AppModel(
+            defaults: defaults,
+            initialRootURL: folder,
+            defaultRootURL: nil
+        )
+        let terminalID = try #require(workspace.activeTerminalID)
+
+        workspace.promptRenameTerminal(terminalID)
+        let renameRequest = try #require(workspace.renameRequest)
+        workspace.saveTerminalRename(renameRequest, title: "  Build  ")
+        #expect(workspace.activeTerminalSession?.customTitle == "Build")
+        #expect(workspace.renameRequest == nil)
+
+        workspace.requestRemoveRootDirectory(folder)
+        let alert = try #require(workspace.alertState)
+        #expect(alert.confirmationTitle == "移除并关闭终端")
+        workspace.confirmAlert(alert)
         #expect(workspace.rootURLs.isEmpty)
-        #expect(workspace.rootNodes.isEmpty)
-        #expect(workspace.activeDirectory == nil)
-        #expect(workspace.terminalSessions.isEmpty)
-        #expect(workspace.activeTerminalID == nil)
+        #expect(workspace.alertState == nil)
+    }
+
+    @Test @MainActor
+    func workspaceDefaultsToUserHomeDirectory() throws {
+        defer { removeIsolatedDefaults() }
+        let home = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let defaults = isolatedDefaults(workspace: home)
+
+        let workspace = AppModel(
+            defaults: defaults,
+            defaultRootURL: home
+        )
+
+        #expect(workspace.rootURLs == [home])
+        #expect(workspace.activeDirectory == home.standardizedFileURL)
+        #expect(workspace.terminalSessions.count == 1)
+        #expect(workspace.activeTerminalSession?.directory == home.standardizedFileURL)
+    }
+
+    @Test @MainActor
+    func defaultHomeIsAddedOnceAlongsideSavedDirectories() throws {
+        defer { removeIsolatedDefaults() }
+        let home = try temporaryDirectory()
+        let saved = home.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: saved,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: home) }
+        let defaults = isolatedDefaults(workspace: home)
+        defaults.set(
+            [saved.path],
+            forKey: "workspace.folderPaths.v1"
+        )
+        defaults.set(
+            saved.path,
+            forKey: "workspace.activeFolderPath.v1"
+        )
+
+        var workspace: AppModel? = AppModel(
+            defaults: defaults,
+            defaultRootURL: home
+        )
+        #expect(workspace?.rootURLs == [home, saved])
+        #expect(workspace?.activeDirectory == saved.standardizedFileURL)
+
+        workspace?.removeRootDirectory(home)
+        workspace = nil
+
+        let restored = AppModel(
+            defaults: defaults,
+            defaultRootURL: home
+        )
+        #expect(restored.rootURLs == [saved])
+        #expect(restored.activeDirectory == saved.standardizedFileURL)
     }
 
     @Test @MainActor
@@ -130,9 +376,9 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let defaults = isolatedDefaults(workspace: container)
 
-        var workspace: WorkspaceModel? = WorkspaceModel(
+        var workspace: AppModel? = AppModel(
             defaults: defaults,
-            watchesFiles: false
+            defaultRootURL: nil
         )
         #expect(workspace?.addRootDirectory(first) == .added(first))
         #expect(workspace?.addRootDirectory(second) == .added(second))
@@ -140,10 +386,7 @@ struct SpaceTests {
         #expect(workspace?.activeDirectory == second)
         workspace = nil
 
-        let restored = WorkspaceModel(
-            defaults: defaults,
-            watchesFiles: false
-        )
+        let restored = AppModel(defaults: defaults)
         #expect(restored.rootURLs == [first, second])
         #expect(restored.activeDirectory == second)
         #expect(restored.terminalSessions.count == 1)
@@ -151,7 +394,50 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func parentChildRootsCannotBothBeAdded() throws {
+    func rootDirectoriesCanBeReorderedAndRestoreOrder() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        let directories = ["First", "Second", "Third"].map {
+            container.appendingPathComponent($0, isDirectory: true)
+        }
+        for directory in directories {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: container) }
+        let defaults = isolatedDefaults(workspace: container)
+
+        var workspace: AppModel? = AppModel(
+            defaults: defaults,
+            defaultRootURL: nil
+        )
+        for directory in directories {
+            #expect(workspace?.addRootDirectory(directory) == .added(directory))
+        }
+        let activeTerminalID = workspace?.activeTerminalID
+
+        let currentFolders = try #require(workspace).folders
+        workspace?.setFolderOrder([
+            currentFolders[2], currentFolders[0], currentFolders[1],
+        ])
+
+        #expect(workspace?.rootURLs == [
+            directories[2], directories[0], directories[1],
+        ])
+        #expect(workspace?.activeTerminalID == activeTerminalID)
+        workspace = nil
+
+        let restored = AppModel(defaults: defaults)
+        #expect(restored.rootURLs == [
+            directories[2], directories[0], directories[1],
+        ])
+        #expect(restored.activeDirectory == directories[2])
+    }
+
+    @Test @MainActor
+    func parentAndChildDirectoriesCanBothBeAdded() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         let parent = container.appendingPathComponent("Parent", isDirectory: true)
@@ -167,19 +453,23 @@ struct SpaceTests {
             )
         }
         defer { try? FileManager.default.removeItem(at: container) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: container),
-            watchesFiles: false
+            defaultRootURL: nil
         )
 
         #expect(workspace.addRootDirectory(parent) == .added(parent))
-        #expect(
-            workspace.addRootDirectory(child)
-                == .overlaps(candidate: child, existing: parent)
-        )
+        #expect(workspace.addRootDirectory(child) == .added(child))
         #expect(workspace.addRootDirectory(independent) == .added(independent))
         #expect(workspace.addRootDirectory(parent) == .duplicate(parent))
-        #expect(workspace.rootURLs == [parent, independent])
+        #expect(workspace.rootURLs == [parent, child, independent])
+        #expect(workspace.terminalSessionCount(exactlyAt: parent) == 1)
+        #expect(workspace.terminalSessionCount(exactlyAt: child) == 1)
+
+        workspace.removeRootDirectory(parent)
+
+        #expect(workspace.rootURLs == [child, independent])
+        #expect(workspace.terminalSessionCount(exactlyAt: child) == 1)
     }
 
     @Test @MainActor
@@ -197,9 +487,9 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let defaults = isolatedDefaults(workspace: container)
 
-        var workspace: WorkspaceModel? = WorkspaceModel(
+        var workspace: AppModel? = AppModel(
             defaults: defaults,
-            watchesFiles: false
+            defaultRootURL: nil
         )
         workspace?.addRootDirectory(first)
         workspace?.addRootDirectory(second)
@@ -208,16 +498,13 @@ struct SpaceTests {
         #expect(workspace?.activeDirectory == first)
         workspace = nil
 
-        let restored = WorkspaceModel(
-            defaults: defaults,
-            watchesFiles: false
-        )
+        let restored = AppModel(defaults: defaults)
         #expect(restored.rootURLs == [first])
         #expect(restored.activeDirectory == first)
     }
 
     @Test @MainActor
-    func switchingBackToDirectoryReusesTerminalSession() throws {
+    func subdirectoriesReuseTheirFolderTerminal() throws {
         defer { removeIsolatedDefaults() }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -233,9 +520,8 @@ struct SpaceTests {
         )
         defer { try? FileManager.default.removeItem(at: root) }
 
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         workspace.activateTerminal(for: first)
@@ -243,37 +529,43 @@ struct SpaceTests {
         let sessionCount = workspace.terminalSessions.count
 
         workspace.activateTerminal(for: second)
-        #expect(workspace.activeTerminalID != firstID)
-        #expect(workspace.terminalSessions.count == sessionCount + 1)
+        #expect(workspace.activeTerminalID == firstID)
+        #expect(workspace.terminalSessions.count == sessionCount)
+        #expect(workspace.activeTerminalSession?.directory == root.standardizedFileURL)
 
         workspace.activateTerminal(for: first)
         #expect(workspace.activeTerminalID == firstID)
-        #expect(workspace.terminalSessions.count == sessionCount + 1)
+        #expect(workspace.terminalSessions.count == sessionCount)
     }
 
     @Test @MainActor
-    func directoryCanOwnMultipleTerminalSessions() throws {
+    func folderCanOwnMultipleTerminalSessions() throws {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
+        let child = root.appendingPathComponent("Child", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: child,
+            withIntermediateDirectories: true
+        )
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
 
-        workspace.openNewTerminal(for: root)
+        workspace.openNewTerminal(for: child)
 
         #expect(workspace.activeTerminalID != firstID)
         #expect(workspace.terminalSessionCount(exactlyAt: root) == 2)
+        #expect(workspace.activeTerminalSession?.directory == root.standardizedFileURL)
         #expect(workspace.activeDirectorySessions.count == 2)
         workspace.selectTerminal(firstID)
         #expect(workspace.activeTerminalID == firstID)
     }
 
     @Test @MainActor
-    func terminalTitleUsesForegroundProgramAndDefaultsToShellName() throws {
+    func terminalTitleUsesApplicationTitleAndIgnoresPathTitle() throws {
         defer { removeIsolatedDefaults() }
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -286,32 +578,55 @@ struct SpaceTests {
             defaultShellPath: "/bin/zsh"
         )
 
-        #expect(session.displayTitle(foregroundProcessName: "top") == "top")
-        #expect(session.displayTitle(foregroundProcessName: "/usr/bin/vim") == "vim")
-        #expect(session.displayTitle(foregroundProcessName: "-zsh") == "zsh")
-        #expect(session.displayTitle(foregroundProcessName: nil) == "zsh")
+        #expect(session.displayTitle(
+            terminalTitle: "Space",
+            foregroundProcessName: "codex"
+        ) == "Space")
+        #expect(session.displayTitle(
+            terminalTitle: "~/code/app/Space",
+            foregroundProcessName: "/usr/bin/vim"
+        ) == "vim")
+        #expect(session.displayTitle(
+            terminalTitle: "",
+            foregroundProcessName: "-zsh"
+        ) == "zsh")
+        #expect(session.displayTitle(
+            terminalTitle: "  ",
+            foregroundProcessName: nil
+        ) == "zsh")
         session.customTitle = "server"
-        #expect(session.displayTitle(foregroundProcessName: "top") == "server")
+        #expect(session.displayTitle(
+            terminalTitle: "~/code/app/Space",
+            foregroundProcessName: "top"
+        ) == "server")
     }
 
     @Test @MainActor
-    func returningToDirectoryWithMultipleTerminalsDoesNotCreateAnother() throws {
+    func returningToFolderWithMultipleTerminalsDoesNotCreateAnother() throws {
         defer { removeIsolatedDefaults() }
-        let root = try temporaryDirectory()
-        let other = root.appendingPathComponent("other", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: other,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try temporaryDirectory()
+        let root = container.appendingPathComponent("root", isDirectory: true)
+        let other = container.appendingPathComponent("other", isDirectory: true)
+        for directory in [root, other] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: container) }
 
-        let workspace = WorkspaceModel(
-            defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: container),
             initialRootURL: root
         )
         workspace.openNewTerminal(for: root)
+        let secondTabID = try #require(workspace.activeTerminalID)
+        let firstTabID = try #require(workspace.activeDirectoryTabs.first?.id)
+        workspace.selectTab(firstTabID)
         let expectedID = try #require(workspace.activeTerminalID)
+        #expect(expectedID != secondTabID)
+
+        #expect(workspace.addRootDirectory(other) == .added(other))
         workspace.activateTerminal(for: other)
         let sessionCount = workspace.terminalSessions.count
 
@@ -327,9 +642,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -347,9 +661,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
 
@@ -370,9 +683,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -391,9 +703,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -420,13 +731,42 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func repeatedSplitsRebalanceRowsAndColumns() throws {
+        defer { removeIsolatedDefaults() }
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: root),
+            initialRootURL: root
+        )
+
+        for _ in 0 ..< 3 {
+            workspace.splitActiveTerminal(direction: .right)
+        }
+        for _ in 0 ..< 2 {
+            workspace.splitActiveTerminal(direction: .down)
+        }
+
+        let tab = try #require(workspace.activeTerminalTab)
+        let frames = Array(tab.root.paneFrames(in: CGRect(
+            x: 0,
+            y: 0,
+            width: 1_200,
+            height: 900
+        )).values)
+        #expect(frames.count == 6)
+        #expect(frames.allSatisfy { abs($0.width - 300) < 0.001 })
+        #expect(frames.filter { abs($0.height - 900) < 0.001 }.count == 3)
+        #expect(frames.filter { abs($0.height - 300) < 0.001 }.count == 3)
+    }
+
+    @Test @MainActor
     func commandOptionArrowsNavigateNestedSplitsByDirection() throws {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let leftID = try #require(workspace.activeTerminalID)
@@ -451,9 +791,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -479,9 +818,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstPaneID = try #require(workspace.activeTerminalID)
@@ -501,9 +839,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         workspace.splitActiveTerminal(direction: .right)
@@ -525,9 +862,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         workspace.openNewTerminal(for: root)
@@ -550,9 +886,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let terminalID = try #require(workspace.activeTerminalID)
@@ -570,9 +905,8 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -590,53 +924,6 @@ struct SpaceTests {
         #expect(!workspace.canRestoreClosedTerminal)
     }
 
-    @Test
-    func directorySearchScansAndFuzzyMatchesRootDirectories() throws {
-        let root = try temporaryDirectory()
-        let source = root.appendingPathComponent("Sources/App", isDirectory: true)
-        let tests = root.appendingPathComponent("Tests/AppTests", isDirectory: true)
-        let ignored = root.appendingPathComponent(
-            "node_modules/dependency",
-            isDirectory: true
-        )
-        for directory in [source, tests, ignored] {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
-        }
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let entries = WorkspaceDirectorySearch.scan(rootURL: root)
-        let sourceMatches = WorkspaceDirectorySearch.topMatches(
-            entries,
-            query: "srcapp"
-        )
-        let preferredMatches = WorkspaceDirectorySearch.topMatches(
-            entries,
-            query: "app",
-            preferredPaths: [tests.standardizedFileURL.path]
-        )
-        let manyEntries = (0 ..< 50).map { index in
-            WorkspaceDirectoryEntry(
-                url: root.appendingPathComponent("Folder\(index)", isDirectory: true),
-                relativePath: "Folder\(index)"
-            )
-        }
-        let limitedMatches = WorkspaceDirectorySearch.topMatches(
-            manyEntries,
-            query: "folder",
-            limit: 20
-        )
-
-        #expect(entries.contains { $0.relativePath == "Sources/App" })
-        #expect(entries.contains { $0.relativePath == "Tests/AppTests" })
-        #expect(!entries.contains { $0.relativePath.contains("node_modules") })
-        #expect(sourceMatches.first?.relativePath == "Sources/App")
-        #expect(preferredMatches.first?.relativePath == "Tests/AppTests")
-        #expect(limitedMatches.count == 20)
-    }
-
     @Test @MainActor
     func openingAnotherRootKeepsExistingRootsAndTerminals() throws {
         defer { removeIsolatedDefaults() }
@@ -651,9 +938,8 @@ struct SpaceTests {
         }
         defer { try? FileManager.default.removeItem(at: parent) }
 
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: first),
-            watchesFiles: false,
             initialRootURL: first
         )
         let firstID = try #require(workspace.activeTerminalID)
@@ -663,7 +949,6 @@ struct SpaceTests {
         #expect(workspace.addRootDirectory(second) == .added(second))
         let secondID = try #require(workspace.activeTerminalID)
         #expect(secondID != firstID)
-        #expect(workspace.rootURL == second.standardizedFileURL)
         #expect(workspace.activeDirectory == second.standardizedFileURL)
         #expect(workspace.rootURLs == [first, second])
         #expect(workspace.terminalSessions.count == 3)
@@ -679,255 +964,17 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
+        let workspace = AppModel(
             defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
             initialRootURL: root
         )
         let firstID = try #require(workspace.activeTerminalID)
         workspace.openNewTerminal(for: root)
         let secondID = try #require(workspace.activeTerminalID)
 
-        workspace.moveTerminal(firstID, to: secondID)
+        workspace.moveTab(firstID, to: secondID)
 
-        #expect(workspace.activeDirectorySessions.map(\.id) == [secondID, firstID])
-    }
-
-    @Test @MainActor
-    func selectingAFileDoesNotChangeTerminalAndClearsOnTerminalActivation() throws {
-        defer { removeIsolatedDefaults() }
-        let root = try temporaryDirectory()
-        let file = root.appendingPathComponent("notes.txt")
-        try "preview".write(to: file, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
-            defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
-            initialRootURL: root
-        )
-        let terminalID = workspace.activeTerminalID
-
-        workspace.selectFile(file)
-
-        #expect(workspace.selectedFileURL == file.standardizedFileURL)
-        #expect(workspace.activeTerminalID == terminalID)
-
-        workspace.activateTerminal(for: root)
-        #expect(workspace.selectedFileURL == nil)
-        #expect(workspace.activeTerminalID == terminalID)
-    }
-
-    @Test @MainActor
-    func returnOnFileOpensViewerInRightSplit() async throws {
-        defer { removeIsolatedDefaults() }
-        let root = try temporaryDirectory()
-        let file = root.appendingPathComponent("README.md")
-        try "# Preview".write(to: file, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
-            defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
-            initialRootURL: root
-        )
-        let rootNode = try #require(workspace.rootNode)
-        let deadline = ContinuousClock.now + .seconds(2)
-        while rootNode.children.isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        workspace.selectFile(file)
-
-        #expect(workspace.openSelectedTreeItemInTerminal())
-        #expect(workspace.terminalSessions.count == 2)
-        #expect(workspace.activeTerminalTab?.terminalIDs.count == 2)
-        #expect(workspace.activeTerminalSession?.customTitle == "README.md")
-        #expect(workspace.selectedFileURL == nil)
-    }
-
-    @Test @MainActor
-    func directionKeysNavigateExpandAndCollapseTheFileTree() async throws {
-        defer { removeIsolatedDefaults() }
-        let root = try temporaryDirectory()
-        let folder = root.appendingPathComponent("Folder", isDirectory: true)
-        let file = root.appendingPathComponent("notes.txt")
-        try FileManager.default.createDirectory(
-            at: folder,
-            withIntermediateDirectories: true
-        )
-        try "preview".write(to: file, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: root) }
-        let workspace = WorkspaceModel(
-            defaults: isolatedDefaults(workspace: root),
-            watchesFiles: false,
-            initialRootURL: root
-        )
-        let deadline = ContinuousClock.now + .seconds(2)
-        let rootNode = try #require(workspace.rootNode)
-        while rootNode.children.count != 2,
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-
-        #expect(workspace.selectedTreeItemURL == root.standardizedFileURL)
-        #expect(workspace.isDirectoryExpanded(root))
-        #expect(workspace.moveTreeSelection(offset: 1))
-        #expect(workspace.selectedTreeItemURL == folder.standardizedFileURL)
-        #expect(workspace.expandOrEnterSelectedTreeDirectory())
-        #expect(workspace.isDirectoryExpanded(folder))
-        #expect(workspace.moveTreeSelection(offset: 1))
-        #expect(workspace.selectedTreeItemURL == file.standardizedFileURL)
-        #expect(workspace.collapseOrSelectParentTreeDirectory())
-        #expect(workspace.selectedTreeItemURL == root.standardizedFileURL)
-        #expect(workspace.collapseOrSelectParentTreeDirectory())
-        #expect(!workspace.isDirectoryExpanded(root))
-        #expect(workspace.expandOrEnterSelectedTreeDirectory())
-        #expect(workspace.isDirectoryExpanded(root))
-        #expect(workspace.expandOrEnterSelectedTreeDirectory())
-        #expect(workspace.selectedTreeItemURL == folder.standardizedFileURL)
-        let terminalCount = workspace.terminalSessions.count
-        #expect(workspace.activateSelectedTreeDirectory())
-        #expect(workspace.activeDirectory == folder.standardizedFileURL)
-        #expect(workspace.terminalSessions.count == terminalCount + 1)
-    }
-
-    @Test
-    func directorySearchReportsTruncation() throws {
-        let root = try temporaryDirectory()
-        for name in ["One", "Two", "Three"] {
-            try FileManager.default.createDirectory(
-                at: root.appendingPathComponent(name, isDirectory: true),
-                withIntermediateDirectories: true
-            )
-        }
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let result = WorkspaceDirectorySearch.scanResult(
-            rootURL: root,
-            maximumCount: 2
-        )
-        #expect(result.entries.count == 2)
-        #expect(result.isTruncated)
-    }
-
-    @Test
-    func directorySearchScansBreadthFirst() throws {
-        let root = try temporaryDirectory()
-        let deep = root.appendingPathComponent("A/Deep", isDirectory: true)
-        let sibling = root.appendingPathComponent("B", isDirectory: true)
-        for directory in [deep, sibling] {
-            try FileManager.default.createDirectory(
-                at: directory,
-                withIntermediateDirectories: true
-            )
-        }
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let result = WorkspaceDirectorySearch.scanResult(
-            rootURL: root,
-            maximumCount: 3
-        )
-
-        #expect(result.entries.map(\.relativePath) == [".", "A", "B"])
-        #expect(result.isTruncated)
-    }
-
-    @Test
-    func directorySearchOnlyReportsDepthLimitWhenChildrenAreOmitted() throws {
-        let root = try temporaryDirectory()
-        let leaf = root.appendingPathComponent("Leaf", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: leaf,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let complete = WorkspaceDirectorySearch.scanResult(
-            rootURL: root,
-            maximumDepth: 1
-        )
-        #expect(!complete.isTruncated)
-
-        let nested = leaf.appendingPathComponent("Nested", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: nested,
-            withIntermediateDirectories: true
-        )
-        let truncated = WorkspaceDirectorySearch.scanResult(
-            rootURL: root,
-            maximumDepth: 1
-        )
-        #expect(truncated.isTruncated)
-        #expect(!truncated.entries.contains { $0.relativePath == "Leaf/Nested" })
-    }
-
-    @Test @MainActor
-    func backgroundDirectoryRefreshKeepsLoadedChildrenVisible() async throws {
-        let root = try temporaryDirectory()
-        let child = root.appendingPathComponent("Child", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: child,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let node = FileNode(url: root, isDirectory: true)
-        node.loadChildren()
-        let deadline = ContinuousClock.now + .seconds(2)
-        while (node.isLoading || node.children.isEmpty),
-              ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        let originalChild = try #require(node.children.first)
-
-        let refresh = Task { @MainActor in
-            await node.reloadLoadedTree(affectedPaths: [child.path])
-        }
-        await Task.yield()
-
-        #expect(!node.isLoading)
-        #expect(node.children.first === originalChild)
-        await refresh.value
-        #expect(!node.isLoading)
-        #expect(node.children.first === originalChild)
-    }
-
-    @Test @MainActor
-    func rootExpandedAndSidebarStateDoNotPersist() throws {
-        defer { removeIsolatedDefaults() }
-        let root = try temporaryDirectory()
-        let child = root.appendingPathComponent("Child", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: child,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: root) }
-        let defaults = isolatedDefaults(workspace: root)
-        defaults.set(child.path, forKey: "rootDirectoryPath")
-        defaults.set([root.path: [child.path]], forKey: "expandedDirectoryPaths")
-        defaults.set(false, forKey: "sidebar.isVisible")
-        defaults.set(360.0, forKey: "sidebar.width")
-
-        var workspace: WorkspaceModel? = WorkspaceModel(
-            defaults: defaults,
-            watchesFiles: false,
-            initialRootURL: root
-        )
-        #expect(workspace?.rootURL == root.standardizedFileURL)
-        #expect(workspace?.isDirectoryExpanded(child) == false)
-        workspace?.setDirectoryExpanded(true, url: child)
-        #expect(workspace?.isDirectoryExpanded(child) == true)
-        workspace = nil
-
-        let restored = WorkspaceModel(
-            defaults: defaults,
-            watchesFiles: false,
-            initialRootURL: root
-        )
-        #expect(restored.activeDirectory == root.standardizedFileURL)
-        #expect(!restored.isDirectoryExpanded(child))
-        #expect(defaults.object(forKey: "rootDirectoryPath") == nil)
-        #expect(defaults.object(forKey: "expandedDirectoryPaths") == nil)
-        #expect(defaults.object(forKey: "sidebar.isVisible") == nil)
-        #expect(defaults.object(forKey: "sidebar.width") == nil)
+        #expect(workspace.activeDirectoryTabs.map(\.id) == [secondID, firstID])
     }
 
     @Test @MainActor
