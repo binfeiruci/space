@@ -288,6 +288,31 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func rapidlyRefreshingTerminalTitleMarksItsFolderAsActive() throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: directory),
+            initialRootURL: directory,
+            defaultRootURL: nil
+        )
+        let session = try #require(workspace.activeTerminalSession)
+
+        session.terminal.terminalDidChangeTitle("⠋ Working")
+        #expect(workspace.folderRefreshingTitleFrame(directory) == nil)
+
+        session.terminal.terminalDidChangeTitle("⠙ Working")
+        #expect(workspace.folderRefreshingTitleFrame(directory) == "⠙")
+
+        session.terminal.terminalDidChangeTitle("⠹ Working")
+        #expect(workspace.folderRefreshingTitleFrame(directory) == "⠹")
+
+        workspace.closeTerminal(session.id)
+        #expect(workspace.folderRefreshingTitleFrame(directory) == nil)
+    }
+
+    @Test @MainActor
     func folderImporterPresentationIsDrivenByWorkspaceState() {
         defer { removeIsolatedDefaults() }
         let defaults = isolatedDefaults(

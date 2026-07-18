@@ -347,15 +347,36 @@ private struct DirectoryRow: View {
             == folder.url.standardizedFileURL
     }
 
+    private var needsAgentAttention: Bool {
+        workspace.folderNeedsAgentAttention(folder.url)
+    }
+
+    private var terminalActivityFrame: String? {
+        guard !isActive, !needsAgentAttention else { return nil }
+        return workspace.folderRefreshingTitleFrame(folder.url)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: isActive ? "folder.fill" : "folder")
                 .foregroundStyle(isActive ? Color.accentColor : .secondary)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(folder.url.lastPathComponent)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 4) {
+                    if let terminalActivityFrame {
+                        Text(terminalActivityFrame)
+                            .font(.system(
+                                size: 12,
+                                weight: .semibold,
+                                design: .monospaced
+                            ))
+                            .frame(width: 10)
+                    }
+
+                    Text(folder.url.lastPathComponent)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
 
                 if let parentPath {
                     Text(parentPath)
@@ -368,7 +389,7 @@ private struct DirectoryRow: View {
 
             Spacer(minLength: 4)
 
-            if workspace.folderNeedsAgentAttention(folder.url) {
+            if needsAgentAttention {
                 Circle()
                     .fill(.orange)
                     .frame(width: 7, height: 7)
@@ -387,6 +408,9 @@ private struct DirectoryRow: View {
         .help(folder.url.path)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("切换到文件夹 \(folder.url.lastPathComponent)")
+        .accessibilityValue(
+            terminalActivityFrame == nil ? "" : "Terminal content is updating"
+        )
         .accessibilityIdentifier(
             "folder-row:\(folderPath)"
         )

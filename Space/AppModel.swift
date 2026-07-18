@@ -416,6 +416,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSidebarVisible = true
     @Published private(set) var agentAttentionByTerminalID:
         [UUID: AgentAttentionNotification] = [:]
+    @Published private var refreshingTitleFrameByTerminalID: [UUID: String] = [:]
 
     let terminalPreferences: TerminalPreferences
     var agentAttentionHandler:
@@ -425,6 +426,7 @@ final class AppModel: ObservableObject {
     private let defaults: UserDefaults
     private var agentAttentionCancellables: [UUID: AnyCancellable] = [:]
     private var agentAttentionFocusCancellables: [UUID: AnyCancellable] = [:]
+    private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
     private var recentlyClosedTerminalDirectories: [URL] = []
     private var lastActiveTabIDByDirectory: [String: UUID] = [:]
 
@@ -649,6 +651,7 @@ final class AppModel: ObservableObject {
             session.terminal.onClose = nil
             agentAttentionCancellables.removeValue(forKey: session.id)
             agentAttentionFocusCancellables.removeValue(forKey: session.id)
+            stopTrackingTerminalTitle(for: session.id)
             clearAgentAttention(for: session.id)
         }
         terminalSessions.removeAll { removedSessionIDs.contains($0.id) }
@@ -819,6 +822,34 @@ final class AppModel: ObservableObject {
 
     func folderNeedsAgentAttention(_ url: URL) -> Bool {
         latestAgentAttentionTerminalID(in: url.standardizedFileURL) != nil
+    }
+
+    func folderRefreshingTitleFrame(_ url: URL) -> String? {
+        let path = url.standardizedFileURL.path
+        for session in terminalSessions.reversed()
+        where session.directory.standardizedFileURL.path == path {
+            if let frame = refreshingTitleFrameByTerminalID[session.id] {
+                return frame
+            }
+        }
+        return nil
+    }
+
+    private static func leadingTitleFrame(_ title: String) -> String? {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return nil }
+        return String(first)
+    }
+
+    private func updateTerminalTitleActivity(
+        _ frame: String?,
+        for terminalID: UUID
+    ) {
+        if let frame {
+            refreshingTitleFrameByTerminalID[terminalID] = frame
+        } else {
+            refreshingTitleFrameByTerminalID.removeValue(forKey: terminalID)
+        }
     }
 
     func receiveAgentAttention(
@@ -1034,6 +1065,7 @@ final class AppModel: ObservableObject {
         closingSession.terminal.onClose = nil
         agentAttentionCancellables.removeValue(forKey: id)
         agentAttentionFocusCancellables.removeValue(forKey: id)
+        stopTrackingTerminalTitle(for: id)
         clearAgentAttention(for: id)
         if let updatedRoot = closingTab.root.removing(id) {
             terminalTabs[tabIndex].root = updatedRoot.balancedForEqualSplits()
@@ -1227,6 +1259,48 @@ final class AppModel: ObservableObject {
             .sink { [weak self] _ in
                 self?.clearVisibleAgentAttention()
             }
+
+        let titleChanges = session.terminal
+            .$title
+            .dropFirst()
+            .removeDuplicates()
+            .map { title in
+                (title: title, instant: ContinuousClock.now)
+            }
+            .share()
+
+        let activityFrames = titleChanges
+            .scan((
+                previous: ContinuousClock.Instant?.none,
+                frame: String?.none
+            )) { state, now in
+                let isRapid = state.previous.map {
+                    now.instant - $0 <= .seconds(1)
+                } ?? false
+                return (
+                    previous: now.instant,
+                    frame: isRapid ? Self.leadingTitleFrame(now.title) : nil
+                )
+            }
+            .map(\.frame)
+
+        let activityStops = titleChanges
+            .debounce(for: .seconds(1), scheduler: RunLoop.main)
+            .map { _ in String?.none }
+
+        terminalTitleCancellables[sessionID] = Publishers.Merge(
+            activityFrames,
+            activityStops
+        )
+        .removeDuplicates()
+        .sink { [weak self] frame in
+            self?.updateTerminalTitleActivity(frame, for: sessionID)
+        }
+    }
+
+    private func stopTrackingTerminalTitle(for terminalID: UUID) {
+        terminalTitleCancellables.removeValue(forKey: terminalID)
+        refreshingTitleFrameByTerminalID.removeValue(forKey: terminalID)
     }
 
     private func latestAgentAttentionTerminalID(

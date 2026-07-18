@@ -33,6 +33,21 @@ struct TerminalWorkspacePane: View {
                 }
             }
         }
+        .task {
+            while !Task.isCancelled {
+                processHiddenTerminalEvents()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+    }
+
+    private func processHiddenTerminalEvents() {
+        guard NSApp.isActive else { return }
+        let visibleTerminalIDs = Set(workspace.activeTabTerminalIDs)
+        for session in workspace.terminalSessions
+        where !visibleTerminalIDs.contains(session.id) {
+            session.terminal.controller.tick()
+        }
     }
 }
 

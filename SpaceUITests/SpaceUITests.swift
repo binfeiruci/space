@@ -5,6 +5,7 @@
 //  Created by bfrc on 2026/7/15.
 //
 
+import Carbon
 import XCTest
 
 final class SpaceUITests: XCTestCase {
@@ -123,6 +124,57 @@ final class SpaceUITests: XCTestCase {
         XCTAssertTrue(
             app.staticTexts["重命名终端"].waitForExistence(timeout: 3)
         )
+    }
+
+    @MainActor
+    func testHiddenFolderTracksRefreshingTerminalTitleUntilItStops() throws {
+        let (app, folders) = try launchIsolatedApp(
+            folderNames: ["First", "Second"]
+        )
+        defer { app.terminate() }
+
+        let previousInputSource = TISCopyCurrentKeyboardInputSource()
+            .takeRetainedValue()
+        let englishInputSource = TISCopyCurrentASCIICapableKeyboardInputSource()
+            .takeRetainedValue()
+        XCTAssertEqual(TISSelectInputSource(englishInputSource), noErr)
+        defer {
+            _ = TISSelectInputSource(previousInputSource)
+        }
+        let terminalTitle = app.staticTexts["terminal-title"]
+        XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
+        app.typeText(
+            "for i in {1..15}; do printf '\\033]0;%s\\007' \"$i\"; "
+                + "sleep 0.2; done"
+        )
+        app.typeKey(.return, modifierFlags: [])
+
+        func folderRow(at url: URL) -> XCUIElement {
+            app.descendants(matching: .any).matching(
+                NSPredicate(
+                    format: "identifier == %@",
+                    "folder-row:\(url.path)"
+                )
+            ).firstMatch
+        }
+        folderRow(at: folders[1]).click()
+
+        let firstFolder = folderRow(at: folders[0])
+        let activityValue = "Terminal content is updating"
+        let activityStarts = NSPredicate(
+            format: "value == %@",
+            activityValue
+        )
+        expectation(for: activityStarts, evaluatedWith: firstFolder)
+        waitForExpectations(timeout: 3)
+        XCTAssertNotEqual(folderRow(at: folders[1]).value as? String, activityValue)
+
+        let activityStops = NSPredicate(
+            format: "value != %@",
+            activityValue
+        )
+        expectation(for: activityStops, evaluatedWith: firstFolder)
+        waitForExpectations(timeout: 5)
     }
 
     @MainActor
