@@ -295,12 +295,18 @@ struct SpaceApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(workspace)
-                .frame(minWidth: 820, minHeight: 540)
-                .onAppear {
-                    appDelegate.installApplicationShortcutMonitor(for: workspace)
-                }
+            ApplicationAppearanceView(
+                preferences: workspace.terminalPreferences
+            ) {
+                ContentView()
+                    .environmentObject(workspace)
+                    .frame(minWidth: 820, minHeight: 540)
+                    .onAppear {
+                        appDelegate.installApplicationShortcutMonitor(
+                            for: workspace
+                        )
+                    }
+            }
         }
         .defaultSize(width: 1_220, height: 780)
         .windowToolbarStyle(.unifiedCompact)
@@ -368,6 +374,14 @@ struct SpaceApp: App {
             CommandGroup(replacing: .saveItem) { }
 
             CommandGroup(after: .pasteboard) {
+                Button("Add Selection to Memo") {
+                    workspace.sendActiveSelectionToMemo()
+                }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(workspace.activeTerminalSession == nil)
+
+                Divider()
+
                 Button("Find…") {
                     workspace.activeTerminalSession?.presentSearch()
                 }
@@ -408,6 +422,26 @@ struct SpaceApp: App {
             }
 
             CommandGroup(before: .windowArrangement) {
+                Button("Previous Folder") {
+                    workspace.selectAdjacentFolder(offset: -1)
+                }
+                .keyboardShortcut(
+                    .leftArrow,
+                    modifiers: [.command, .shift]
+                )
+                .disabled(workspace.folders.count < 2)
+
+                Button("Next Folder") {
+                    workspace.selectAdjacentFolder(offset: 1)
+                }
+                .keyboardShortcut(
+                    .rightArrow,
+                    modifiers: [.command, .shift]
+                )
+                .disabled(workspace.folders.count < 2)
+
+                Divider()
+
                 Button("Previous Tab") {
                     workspace.selectAdjacentTerminal(offset: -1)
                 }
@@ -426,30 +460,49 @@ struct SpaceApp: App {
                     workspace.selectSplit(in: .left)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canNavigateSplit)
+                .disabled(!workspace.canSelectSplit(in: .left))
 
                 Button("Select Split Right") {
                     workspace.selectSplit(in: .right)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canNavigateSplit)
+                .disabled(!workspace.canSelectSplit(in: .right))
 
                 Button("Select Split Above") {
                     workspace.selectSplit(in: .up)
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canNavigateSplit)
+                .disabled(!workspace.canSelectSplit(in: .up))
 
                 Button("Select Split Below") {
                     workspace.selectSplit(in: .down)
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canNavigateSplit)
+                .disabled(!workspace.canSelectSplit(in: .down))
             }
         }
 
         Settings {
             TerminalSettingsView(preferences: workspace.terminalPreferences)
         }
+    }
+}
+
+private struct ApplicationAppearanceView<Content: View>: View {
+    @ObservedObject var preferences: TerminalPreferences
+    let content: Content
+
+    init(
+        preferences: TerminalPreferences,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.preferences = preferences
+        self.content = content()
+    }
+
+    var body: some View {
+        content.preferredColorScheme(
+            preferences.applicationAppearance.colorScheme
+        )
     }
 }

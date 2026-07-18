@@ -65,7 +65,18 @@ struct ContentView: View {
                     .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+
+            if let notice = workspace.memoSaveNotice {
+                MemoSaveToast(message: notice.message)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .task(id: notice.id) {
+                        try? await Task.sleep(for: .seconds(1.5))
+                        guard !Task.isCancelled else { return }
+                        workspace.dismissMemoSaveNotice(notice.id)
+                    }
+            }
         }
+        .animation(.easeOut(duration: 0.16), value: workspace.memoSaveNotice)
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("")
         .background(WindowConfigurator(
@@ -167,6 +178,26 @@ struct ContentView: View {
                 workspace.dismissAlert()
             }
         )
+    }
+}
+
+private struct MemoSaveToast: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "checkmark")
+            .font(.callout.weight(.medium))
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+            .background(.regularMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
+            .padding(.bottom, 18)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .accessibilityIdentifier("memo-save-toast")
     }
 }
 

@@ -115,6 +115,35 @@ struct SpaceTests {
         #expect(TerminalSearchAction.end == "end_search")
     }
 
+    @Test
+    func folderMemoFileCreatesAndAppendsSelections() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let memoURL = directory.appendingPathComponent(".memo")
+
+        let date = Date(timeIntervalSince1970: 0)
+        let timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        try FolderMemoFile.append(
+            "first note",
+            date: date,
+            timeZone: timeZone,
+            in: directory
+        )
+        #expect(try String(contentsOf: memoURL, encoding: .utf8)
+            == "---\n1970-01-01 00:00\n\nfirst note\n\n")
+
+        try FolderMemoFile.append(
+            "second note\nthird line\n",
+            date: date,
+            timeZone: timeZone,
+            in: directory
+        )
+        #expect(try String(contentsOf: memoURL, encoding: .utf8)
+            == "---\n1970-01-01 00:00\n\nfirst note\n\n"
+                + "---\n1970-01-01 00:00\n\n"
+                + "second note\nthird line\n\n")
+    }
+
     @Test @MainActor
     func presentingTerminalSearchAlwaysRequestsFieldFocus() throws {
         defer { removeIsolatedDefaults() }
@@ -699,6 +728,41 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func commandShiftArrowsSwitchAdjacentFoldersAndWrap() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let first = container.appendingPathComponent("First", isDirectory: true)
+        let second = container.appendingPathComponent("Second", isDirectory: true)
+        let third = container.appendingPathComponent("Third", isDirectory: true)
+        for folder in [first, second, third] {
+            try FileManager.default.createDirectory(
+                at: folder,
+                withIntermediateDirectories: true
+            )
+        }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: container),
+            initialRootURL: first,
+            defaultRootURL: nil
+        )
+        let firstTerminalID = try #require(workspace.activeTerminalID)
+        workspace.addRootDirectory(second)
+        workspace.addRootDirectory(third)
+        workspace.activateTerminal(for: first)
+
+        #expect(workspace.selectAdjacentFolder(offset: 1))
+        #expect(workspace.activeDirectory == second.standardizedFileURL)
+        #expect(workspace.selectAdjacentFolder(offset: 1))
+        #expect(workspace.activeDirectory == third.standardizedFileURL)
+        #expect(workspace.selectAdjacentFolder(offset: 1))
+        #expect(workspace.activeDirectory == first.standardizedFileURL)
+        #expect(workspace.activeTerminalID == firstTerminalID)
+        #expect(workspace.selectAdjacentFolder(offset: -1))
+        #expect(workspace.activeDirectory == third.standardizedFileURL)
+    }
+
+    @Test @MainActor
     func commandDSplitsCurrentTerminalToTheRight() throws {
         defer { removeIsolatedDefaults() }
         let root = try temporaryDirectory()
@@ -728,6 +792,41 @@ struct SpaceTests {
         #expect(axis == .horizontal)
         #expect(first == .pane(firstID))
         #expect(second == .pane(secondID))
+        #expect(workspace.canSelectSplit(in: .left))
+        #expect(!workspace.canSelectSplit(in: .right))
+        #expect(!workspace.canSelectSplit(in: .up))
+        #expect(!workspace.canSelectSplit(in: .down))
+
+        workspace.selectTerminal(firstID)
+        #expect(!workspace.canSelectSplit(in: .left))
+        #expect(workspace.canSelectSplit(in: .right))
+        #expect(!workspace.canSelectSplit(in: .up))
+        #expect(!workspace.canSelectSplit(in: .down))
+    }
+
+    @Test @MainActor
+    func verticalSplitOnlyEnablesAvailableMenuDirections() throws {
+        defer { removeIsolatedDefaults() }
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = AppModel(
+            defaults: isolatedDefaults(workspace: root),
+            initialRootURL: root
+        )
+        let topID = try #require(workspace.activeTerminalID)
+
+        workspace.splitActiveTerminal(direction: .down)
+
+        #expect(workspace.canSelectSplit(in: .up))
+        #expect(!workspace.canSelectSplit(in: .down))
+        #expect(!workspace.canSelectSplit(in: .left))
+        #expect(!workspace.canSelectSplit(in: .right))
+
+        workspace.selectTerminal(topID)
+        #expect(!workspace.canSelectSplit(in: .up))
+        #expect(workspace.canSelectSplit(in: .down))
+        #expect(!workspace.canSelectSplit(in: .left))
+        #expect(!workspace.canSelectSplit(in: .right))
     }
 
     @Test @MainActor
@@ -983,14 +1082,35 @@ struct SpaceTests {
         let root = FileManager.default.temporaryDirectory
         let defaults = isolatedDefaults(workspace: root)
         let preferences = TerminalPreferences(defaults: defaults)
-        preferences.fontFamily = "Menlo"
-        preferences.fontSize = 17
-        preferences.theme = .light
+        #expect(
+            preferences.ghosttyConfigPath
+                == TerminalPreferences.defaultGhosttyConfigPath
+        )
+        preferences.applicationAppearance = .dark
+        preferences.ghosttyConfigPath = "~/terminal/ghostty.conf"
 
         let restored = TerminalPreferences(defaults: defaults)
-        #expect(restored.fontFamily == "Menlo")
-        #expect(restored.fontSize == 17)
-        #expect(restored.theme == .light)
+        #expect(restored.applicationAppearance == .dark)
+        #expect(restored.ghosttyConfigPath == "~/terminal/ghostty.conf")
+    }
+
+    @Test @MainActor
+    func ghosttyConfigPathResolvesExistingCustomFile() throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = directory.appendingPathComponent("ghostty.conf")
+        try "font-size = 15\n".write(to: config, atomically: true, encoding: .utf8)
+        let preferences = TerminalPreferences(
+            defaults: isolatedDefaults(workspace: directory)
+        )
+
+        preferences.ghosttyConfigPath = config.path
+
+        #expect(preferences.resolvedGhosttyConfigURL == config)
+        #expect(
+            preferences.ghosttyConfigSource == .file(config.path)
+        )
     }
 
     private func temporaryDirectory() throws -> URL {

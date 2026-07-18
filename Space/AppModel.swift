@@ -58,6 +58,11 @@ struct AgentAttentionNotification: Identifiable, Equatable {
     }
 }
 
+struct MemoSaveNotice: Identifiable, Equatable {
+    let id = UUID()
+    let message: String
+}
+
 enum TerminalSearchAction {
     static func update(query: String) -> String {
         "search:\(query)"
@@ -68,6 +73,102 @@ enum TerminalSearchAction {
     }
 
     static let end = "end_search"
+}
+
+enum FolderMemoFile {
+    static let filename = ".memo"
+
+    static func append(
+        _ text: String,
+        date: Date = Date(),
+        timeZone: TimeZone = .current,
+        in directory: URL
+    ) throws {
+        guard !text.isEmpty else { return }
+
+        let fileURL = directory.appendingPathComponent(filename)
+        let fileManager = FileManager.default
+        let exists = fileManager.fileExists(atPath: fileURL.path)
+        var data = Data()
+
+        if exists {
+            let attributes = try fileManager.attributesOfItem(
+                atPath: fileURL.path
+            )
+            let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            if fileSize > 0 {
+                let readHandle = try FileHandle(forReadingFrom: fileURL)
+                defer { try? readHandle.close() }
+                let endingSize = min(fileSize, 2)
+                try readHandle.seek(toOffset: fileSize - endingSize)
+                let ending = try readHandle.read(upToCount: Int(endingSize))
+                    ?? Data()
+                let newlineCount = ending.reversed().prefix { $0 == 0x0A }.count
+                for _ in newlineCount ..< 2 {
+                    data.append(0x0A)
+                }
+            }
+        }
+
+        let entry = memoEntry(
+            text: text,
+            date: date,
+            timeZone: timeZone
+        )
+        data.append(contentsOf: entry.utf8)
+        let newlineCount = data.reversed().prefix { $0 == 0x0A }.count
+        for _ in newlineCount ..< 2 {
+            data.append(0x0A)
+        }
+
+        if exists {
+            let writeHandle = try FileHandle(forWritingTo: fileURL)
+            defer { try? writeHandle.close() }
+            try writeHandle.seekToEnd()
+            try writeHandle.write(contentsOf: data)
+        } else {
+            try data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    private static func memoEntry(
+        text: String,
+        date: Date,
+        timeZone: TimeZone
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return "---\n\(formatter.string(from: date))\n\n\(text)"
+    }
+}
+
+private struct PasteboardSnapshot {
+    private let items: [[(type: NSPasteboard.PasteboardType, data: Data)]]
+
+    init(_ pasteboard: NSPasteboard) {
+        items = pasteboard.pasteboardItems?.map { item in
+            item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            }
+        } ?? []
+    }
+
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        let pasteboardItems = items.map { values in
+            let item = NSPasteboardItem()
+            for value in values {
+                item.setData(value.data, forType: value.type)
+            }
+            return item
+        }
+        if !pasteboardItems.isEmpty {
+            pasteboard.writeObjects(pasteboardItems)
+        }
+    }
 }
 
 enum TerminalSplitAxis: Equatable {
@@ -310,6 +411,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeTerminalID: UUID?
     @Published private(set) var alertState: WorkspaceAlertState?
     @Published private(set) var renameRequest: TerminalRenameRequest?
+    @Published private(set) var memoSaveNotice: MemoSaveNotice?
     @Published private(set) var isFolderImporterPresented = false
     @Published private(set) var isSidebarVisible = true
     @Published private(set) var agentAttentionByTerminalID:
@@ -321,7 +423,6 @@ final class AppModel: ObservableObject {
     var agentAttentionClearedHandler: ((UUID) -> Void)?
 
     private let defaults: UserDefaults
-    private var preferencesCancellable: AnyCancellable?
     private var agentAttentionCancellables: [UUID: AnyCancellable] = [:]
     private var agentAttentionFocusCancellables: [UUID: AnyCancellable] = [:]
     private var recentlyClosedTerminalDirectories: [URL] = []
@@ -380,14 +481,6 @@ final class AppModel: ObservableObject {
             bindCloseHandler(to: initialSession)
         }
         persistWorkspaceState()
-
-        preferencesCancellable = terminalPreferences.objectWillChange
-            .sink { [weak self] in
-                Task { @MainActor in
-                    await Task.yield()
-                    self?.applyPreferencesToExistingTerminals()
-                }
-            }
     }
 
     var rootURLs: [URL] {
@@ -411,10 +504,6 @@ final class AppModel: ObservableObject {
         activeTerminalTab?.terminalIDs ?? []
     }
 
-    var canNavigateSplit: Bool {
-        activeTabTerminalIDs.count > 1
-    }
-
     var activeTerminalSession: TerminalSession? {
         guard let activeTerminalID else { return nil }
         return terminalSessions.first { $0.id == activeTerminalID }
@@ -430,6 +519,41 @@ final class AppModel: ObservableObject {
 
     func dismissFolderImporter() {
         isFolderImporterPresented = false
+    }
+
+    @discardableResult
+    func sendActiveSelectionToMemo() -> Bool {
+        guard let session = activeTerminalSession,
+              let terminalView = session.terminalView else { return false }
+
+        let pasteboard = NSPasteboard.general
+        let pasteboardSnapshot = PasteboardSnapshot(pasteboard)
+        guard terminalView.copySelectedTextToPasteboard() else { return false }
+        defer { pasteboardSnapshot.restore(to: pasteboard) }
+        guard let selection = pasteboard.string(forType: .string),
+              !selection.isEmpty else { return false }
+
+        do {
+            try FolderMemoFile.append(
+                selection,
+                in: session.directory
+            )
+            memoSaveNotice = MemoSaveNotice(message: "Saved to .memo")
+            return true
+        } catch {
+            alertState = WorkspaceAlertState(
+                title: "无法写入备忘录",
+                message: error.localizedDescription,
+                confirmationTitle: nil,
+                action: nil
+            )
+            return false
+        }
+    }
+
+    func dismissMemoSaveNotice(_ id: UUID) {
+        guard memoSaveNotice?.id == id else { return }
+        memoSaveNotice = nil
     }
 
     func toggleSidebar() {
@@ -770,39 +894,29 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func selectSplit(in direction: TerminalSplitDirection) -> Bool {
-        guard let activeTerminalID,
-              let root = activeTerminalTab?.root,
-              let currentFrame = root.paneFrames()[activeTerminalID]
-        else { return false }
-
-        let candidates = root.paneFrames().filter { id, frame in
-            guard id != activeTerminalID else { return false }
-            switch direction {
-            case .left:
-                return frame.midX < currentFrame.midX
-            case .right:
-                return frame.midX > currentFrame.midX
-            case .up:
-                return frame.midY < currentFrame.midY
-            case .down:
-                return frame.midY > currentFrame.midY
-            }
-        }
-        let selected = candidates.min { lhs, rhs in
-            splitNavigationScore(
-                from: currentFrame,
-                to: lhs.value,
-                direction: direction
-            ) < splitNavigationScore(
-                from: currentFrame,
-                to: rhs.value,
-                direction: direction
-            )
-        }
-        guard let selected else { return false }
-        selectTerminal(selected.key)
+    func selectAdjacentFolder(offset: Int) -> Bool {
+        guard folders.count > 1,
+              let activeDirectory,
+              let activeFolder = rootDirectory(containing: activeDirectory),
+              let index = folders.firstIndex(where: {
+                  $0.url.standardizedFileURL.path == activeFolder.path
+              }) else { return false }
+        let next = (index + offset + folders.count) % folders.count
+        activateTerminal(for: folders[next].url)
         return true
+    }
+
+    @discardableResult
+    func selectSplit(in direction: TerminalSplitDirection) -> Bool {
+        guard let target = splitNavigationTarget(in: direction) else {
+            return false
+        }
+        selectTerminal(target)
+        return true
+    }
+
+    func canSelectSplit(in direction: TerminalSplitDirection) -> Bool {
+        splitNavigationTarget(in: direction) != nil
     }
 
     func moveTab(_ sourceTabID: UUID, to targetTabID: UUID) {
@@ -1042,6 +1156,41 @@ final class AppModel: ObservableObject {
             + (overlapsPerpendicularAxis ? 0 : 2)
     }
 
+    private func splitNavigationTarget(
+        in direction: TerminalSplitDirection
+    ) -> UUID? {
+        guard let activeTerminalID,
+              let root = activeTerminalTab?.root,
+              let currentFrame = root.paneFrames()[activeTerminalID]
+        else { return nil }
+
+        return root.paneFrames()
+            .filter { id, frame in
+                guard id != activeTerminalID else { return false }
+                switch direction {
+                case .left:
+                    return frame.midX < currentFrame.midX
+                case .right:
+                    return frame.midX > currentFrame.midX
+                case .up:
+                    return frame.midY < currentFrame.midY
+                case .down:
+                    return frame.midY > currentFrame.midY
+                }
+            }
+            .min { lhs, rhs in
+                splitNavigationScore(
+                    from: currentFrame,
+                    to: lhs.value,
+                    direction: direction
+                ) < splitNavigationScore(
+                    from: currentFrame,
+                    to: rhs.value,
+                    direction: direction
+                )
+            }?.key
+    }
+
     private func bindCloseHandler(to session: TerminalSession) {
         let sessionID = session.id
         session.terminal.onClose = { [weak self] processAlive in
@@ -1105,12 +1254,6 @@ final class AppModel: ObservableObject {
             forKey: terminalID
         ) != nil else { return }
         agentAttentionClearedHandler?(terminalID)
-    }
-
-    private func applyPreferencesToExistingTerminals() {
-        for session in terminalSessions {
-            session.applyVisualPreferences(terminalPreferences)
-        }
     }
 
     private func persistWorkspaceState() {
@@ -1210,7 +1353,6 @@ final class TerminalSession: ObservableObject, Identifiable {
     let directory: URL
     let terminal: TerminalViewState
     let defaultShellName: String
-    let usesGhosttyConfiguration: Bool
     var terminalView: TerminalView?
     @Published var customTitle: String?
     @Published var isSearchPresented = false
@@ -1227,19 +1369,13 @@ final class TerminalSession: ObservableObject, Identifiable {
     ) {
         let preferences = preferences ?? TerminalPreferences()
         self.directory = directory.standardizedFileURL
-        let shellPath = defaultShellPath ?? preferences.shellPath
+        let shellPath = defaultShellPath ?? Self.loginShellPath
         defaultShellName = Self.processName(
-            from: shellPath.isEmpty ? Self.loginShellPath : shellPath
+            from: shellPath
         ) ?? "shell"
-        usesGhosttyConfiguration = preferences.resolvedGhosttyConfigURL != nil
 
-        let configSource: TerminalController.ConfigSource = preferences
-            .resolvedGhosttyConfigURL
-            .map { .file($0.path) } ?? .none
         terminal = TerminalViewState(
-            configSource: configSource,
-            theme: preferences.terminalTheme,
-            terminalConfiguration: preferences.terminalConfiguration
+            configSource: preferences.ghosttyConfigSource
         )
         terminal.configuration = TerminalSurfaceOptions(
             backend: .exec,
@@ -1311,15 +1447,6 @@ final class TerminalSession: ObservableObject, Identifiable {
             || title.hasPrefix("~/")
             || title.hasPrefix("/")
             || title.hasPrefix("file://")
-    }
-
-    func applyVisualPreferences(_ preferences: TerminalPreferences) {
-        guard usesGhosttyConfiguration
-            == (preferences.resolvedGhosttyConfigURL != nil) else { return }
-        _ = terminal.controller.setTheme(preferences.terminalTheme)
-        _ = terminal.controller.setTerminalConfiguration(
-            preferences.terminalConfiguration
-        )
     }
 
     static func processName(for pidValue: UInt64?) -> String? {
