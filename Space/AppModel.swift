@@ -432,27 +432,17 @@ final class AppModel: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        initialRootURL: URL? = nil,
-        defaultRootURL: URL? = FileManager.default.homeDirectoryForCurrentUser
+        initialRootURL: URL? = nil
     ) {
         self.defaults = defaults
         terminalPreferences = TerminalPreferences(defaults: defaults)
 
         let restoredRoots = Self.restoredRootDirectories(from: defaults)
-        var roots: [URL]
+        let roots: [URL]
         if let initialRoot = Self.validDirectory(initialRootURL) {
             roots = [initialRoot]
         } else {
             roots = restoredRoots
-            if !defaults.bool(forKey: Keys.didAddDefaultFolder) {
-                if let defaultRoot = Self.validDirectory(defaultRootURL),
-                   !roots.contains(where: {
-                       $0.standardizedFileURL.path == defaultRoot.path
-                   }) {
-                    roots.insert(defaultRoot, at: 0)
-                }
-                defaults.set(true, forKey: Keys.didAddDefaultFolder)
-            }
         }
         let restoredActiveDirectory = Self.restoredActiveDirectory(
             from: defaults,
@@ -544,7 +534,7 @@ final class AppModel: ObservableObject {
             return true
         } catch {
             alertState = WorkspaceAlertState(
-                title: "无法写入备忘录",
+                title: "Unable to Save Memo",
                 message: error.localizedDescription,
                 confirmationTitle: nil,
                 action: nil
@@ -580,7 +570,7 @@ final class AppModel: ObservableObject {
 
     func presentFolderImportError(_ error: Error) {
         alertState = WorkspaceAlertState(
-            title: "无法添加文件夹",
+            title: "Unable to Add Folder",
             message: error.localizedDescription,
             confirmationTitle: nil,
             action: nil
@@ -620,18 +610,22 @@ final class AppModel: ObservableObject {
             $0.standardizedFileURL.path == url.standardizedFileURL.path
         }) else { return }
         let rootPath = root.standardizedFileURL.path
-        let sessionCount = terminalSessions.count {
+        let rootSessions = terminalSessions.filter {
             $0.directory.standardizedFileURL.path == rootPath
         }
-        guard sessionCount > 0 else {
+        guard rootSessions.contains(where: \.isRunningForegroundProgram) else {
             removeRootDirectory(root)
             return
         }
 
+        let sessionCount = rootSessions.count
+        let terminalCount = sessionCount == 1
+            ? "1 terminal"
+            : "\(sessionCount) terminals"
         alertState = WorkspaceAlertState(
-            title: "移除文件夹“\(root.lastPathComponent)”？",
-            message: "将关闭该文件夹的 \(sessionCount) 个终端及正在运行的程序。",
-            confirmationTitle: "移除并关闭终端",
+            title: "Remove Folder “\(root.lastPathComponent)”?",
+            message: "This will close \(terminalCount) for this folder and terminate any running programs.",
+            confirmationTitle: "Remove and Close Terminals",
             action: .removeRoot(root)
         )
     }
@@ -784,11 +778,6 @@ final class AppModel: ObservableObject {
             terminalTabs[tabIndex].id
         persistWorkspaceState()
         return session
-    }
-
-    func duplicateActiveTerminal() {
-        guard let session = activeTerminalSession else { return }
-        openNewTerminal(for: session.directory)
     }
 
     func selectTerminal(_ id: UUID) {
@@ -985,10 +974,10 @@ final class AppModel: ObservableObject {
         }
 
         alertState = WorkspaceAlertState(
-            title: "关闭正在运行的终端？",
-            message: (session.currentProcessName ?? "程序")
-                + " 仍在运行，关闭终端会结束该进程。",
-            confirmationTitle: "关闭终端",
+            title: "Close Running Terminal?",
+            message: (session.currentProcessName ?? "A program")
+                + " is still running. Closing the terminal will terminate the process.",
+            confirmationTitle: "Close Terminal",
             action: .closeTerminal(id)
         )
     }
@@ -1005,12 +994,15 @@ final class AppModel: ObservableObject {
             return
         }
 
+        let splitCount = runningPrograms.count == 1
+            ? "1 split is"
+            : "\(runningPrograms.count) splits are"
         alertState = WorkspaceAlertState(
-            title: "关闭正在运行的终端标签？",
-            message: "\(runningPrograms.count) 个分屏仍在运行命令："
-                + Array(Set(runningPrograms)).sorted().joined(separator: "、")
-                + "。关闭标签会结束这些进程。",
-            confirmationTitle: "关闭标签",
+            title: "Close Terminal Tab with Running Commands?",
+            message: "\(splitCount) still running commands: "
+                + Array(Set(runningPrograms)).sorted().joined(separator: ", ")
+                + ". Closing the tab will terminate these processes.",
+            confirmationTitle: "Close Tab",
             action: .closeTab(id)
         )
     }
@@ -1347,15 +1339,15 @@ final class AppModel: ObservableObject {
             case .added:
                 nil
             case let .invalid(url):
-                "“\(url.path)”不是可用文件夹。"
+                "“\(url.path)” is not a valid folder."
             case let .duplicate(url):
-                "文件夹“\(url.lastPathComponent)”已经添加。"
+                "Folder “\(url.lastPathComponent)” has already been added."
             }
         }
         guard !messages.isEmpty else { return }
 
         alertState = WorkspaceAlertState(
-            title: "部分文件夹未添加",
+            title: "Some Folders Were Not Added",
             message: messages.joined(separator: "\n"),
             confirmationTitle: nil,
             action: nil
@@ -1417,7 +1409,6 @@ final class AppModel: ObservableObject {
     private enum Keys {
         static let folderPaths = "workspace.folderPaths.v1"
         static let activeFolderPath = "workspace.activeFolderPath.v1"
-        static let didAddDefaultFolder = "workspace.didAddDefaultFolder.v1"
     }
 }
 

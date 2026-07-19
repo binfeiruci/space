@@ -161,10 +161,10 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "有命令正在运行"
+        alert.messageText = "Commands Are Running"
         alert.informativeText = prompt.informativeText
-        alert.addButton(withTitle: "退出")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
 
         return alert.runModal() == .alertFirstButtonReturn
             ? .terminateNow
@@ -182,9 +182,12 @@ struct ApplicationTerminationPrompt {
     var informativeText: String {
         guard requiresConfirmation else { return "" }
 
-        let names = Array(Set(runningProgramNames)).sorted().joined(separator: "、")
-        return "\(runningProgramNames.count) 个终端正在运行命令：\(names)。"
-            + "\n退出会结束这些程序。"
+        let names = Array(Set(runningProgramNames)).sorted().joined(separator: ", ")
+        let subject = runningProgramNames.count == 1
+            ? "1 terminal is"
+            : "\(runningProgramNames.count) terminals are"
+        return "\(subject) running commands: \(names)."
+            + "\nQuitting will terminate these programs."
     }
 }
 
@@ -277,8 +280,7 @@ struct SpaceApp: App {
                 defaults.removePersistentDomain(forName: suiteName)
                 let workspace = AppModel(
                     defaults: defaults,
-                    initialRootURL: URL(fileURLWithPath: firstPath),
-                    defaultRootURL: nil
+                    initialRootURL: URL(fileURLWithPath: firstPath)
                 )
                 for path in paths.dropFirst() {
                     workspace.addRootDirectory(

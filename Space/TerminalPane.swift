@@ -22,10 +22,10 @@ struct TerminalWorkspacePane: View {
                     Image(systemName: "terminal")
                         .font(.system(size: 28))
                         .foregroundStyle(.tertiary)
-                    Text("此文件夹没有打开的终端")
+                    Text("No terminals are open in this folder")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Button("新建终端") {
+                    Button("New Terminal") {
                         if let directory = workspace.activeDirectory {
                             workspace.openNewTerminal(for: directory)
                         }
@@ -216,7 +216,11 @@ private struct TerminalSplitContainer: View {
                 }
         )
         .accessibilityElement()
-        .accessibilityLabel(axis == .horizontal ? "调整左右分屏" : "调整上下分屏")
+        .accessibilityLabel(
+            axis == .horizontal
+                ? "Resize Horizontal Split"
+                : "Resize Vertical Split"
+        )
         .accessibilityIdentifier("terminal-split-divider")
     }
 
@@ -505,8 +509,8 @@ private struct TerminalTab: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("关闭终端标签")
-            .accessibilityLabel("关闭终端标签 \(title)")
+            .help("Close Terminal Tab")
+            .accessibilityLabel("Close terminal tab \(title)")
             .padding(.trailing, 5)
             .opacity(isActive || isHovering ? 1 : 0)
             .allowsHitTesting(isActive || isHovering)
@@ -539,19 +543,6 @@ private struct TerminalTab: View {
                 workspace.promptRenameTerminal(session.id)
             }
         )
-        .contextMenu {
-            Button("Rename Tab…") {
-                workspace.promptRenameTerminal(session.id)
-            }
-            Button("Duplicate Tab") {
-                workspace.selectTerminal(session.id)
-                workspace.duplicateActiveTerminal()
-            }
-            Divider()
-            Button("Close Tab") {
-                workspace.requestCloseTab(tabID)
-            }
-        }
         .task {
             while !Task.isCancelled {
                 foregroundProcessName = session.currentProcessName
@@ -600,7 +591,7 @@ private struct TerminalSearchBar: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("查找终端内容", text: $session.searchQuery)
+            TextField("Find in Terminal", text: $session.searchQuery)
                 .textFieldStyle(.plain)
                 .focused($isSearchFocused)
                 .accessibilityIdentifier("terminal-search-field")
@@ -617,19 +608,19 @@ private struct TerminalSearchBar: View {
 
             searchButton(
                 systemName: "chevron.up",
-                help: "上一个匹配项（⇧⌘G）"
+                help: "Previous Match (⇧⌘G)"
             ) {
                 session.navigateSearch(forward: false)
             }
 
             searchButton(
                 systemName: "chevron.down",
-                help: "下一个匹配项（⌘G）"
+                help: "Next Match (⌘G)"
             ) {
                 session.navigateSearch(forward: true)
             }
 
-            searchButton(systemName: "xmark", help: "关闭查找（Esc）") {
+            searchButton(systemName: "xmark", help: "Close Find (Esc)") {
                 session.dismissSearch()
             }
         }
@@ -657,7 +648,7 @@ private struct TerminalSearchBar: View {
             session.dismissSearch()
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("终端内容查找")
+        .accessibilityLabel("Find in Terminal")
     }
 
     private func searchButton(

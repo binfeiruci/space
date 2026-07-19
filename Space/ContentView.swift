@@ -112,11 +112,11 @@ struct ContentView: View {
                     }
                     .keyboardShortcut("s", modifiers: [.command, .option])
                     .help(workspace.isSidebarVisible
-                        ? "收起文件夹列表（⌥⌘S）"
-                        : "展开文件夹列表（⌥⌘S）")
+                        ? "Collapse Folder List (⌥⌘S)"
+                        : "Expand Folder List (⌥⌘S)")
                     .accessibilityLabel(workspace.isSidebarVisible
-                        ? "收起文件夹列表"
-                        : "展开文件夹列表")
+                        ? "Collapse Folder List"
+                        : "Expand Folder List")
                 }
             }
         }
@@ -163,7 +163,7 @@ struct ContentView: View {
             return Alert(
                 title: Text(state.title),
                 message: Text(state.message),
-                dismissButton: .default(Text("好")) {
+                dismissButton: .default(Text("OK")) {
                     workspace.dismissAlert()
                 }
             )
@@ -214,26 +214,26 @@ private struct TerminalRenameSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("重命名终端")
+            Text("Rename Terminal")
                 .font(.headline)
 
-            TextField("终端名称", text: $title)
+            TextField("Terminal Name", text: $title)
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFocused)
                 .onSubmit(save)
 
-            Text("留空即可恢复跟随前台程序的标题。")
+            Text("Leave blank to follow the foreground process title.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             HStack {
                 Spacer()
-                Button("取消", role: .cancel) {
+                Button("Cancel", role: .cancel) {
                     workspace.dismissRenameRequest()
                 }
                 .keyboardShortcut(.cancelAction)
 
-                Button("保存", action: save)
+                Button("Save", action: save)
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -277,7 +277,7 @@ private struct DirectorySidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("文件夹")
+                Text("Folders")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -407,7 +407,7 @@ private struct DirectoryRow: View {
         .contentShape(Rectangle())
         .help(folder.url.path)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("切换到文件夹 \(folder.url.lastPathComponent)")
+        .accessibilityLabel("Switch to folder \(folder.url.lastPathComponent)")
         .accessibilityValue(
             terminalActivityFrame == nil ? "" : "Terminal content is updating"
         )
@@ -437,14 +437,10 @@ private struct WorkspaceEmptyView: View {
                 .font(.system(size: 42, weight: .light))
                 .foregroundStyle(.secondary)
 
-            Text("添加文件夹")
+            Text("No Folders")
                 .font(.title2.weight(.semibold))
 
-            Text("添加一个或多个文件夹，开始使用 Space。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            Button("添加文件夹…") {
+            Button("Add Folder…") {
                 workspace.chooseRootDirectory()
             }
             .controlSize(.large)

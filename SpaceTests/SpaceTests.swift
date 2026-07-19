@@ -53,9 +53,9 @@ struct SpaceTests {
         #expect(!idlePrompt.requiresConfirmation)
         #expect(idlePrompt.informativeText.isEmpty)
         #expect(prompt.requiresConfirmation)
-        #expect(prompt.informativeText.contains("3 个终端"))
-        #expect(prompt.informativeText.contains("top、vim"))
-        #expect(prompt.informativeText.contains("退出会结束这些程序"))
+        #expect(prompt.informativeText.contains("3 terminals"))
+        #expect(prompt.informativeText.contains("top, vim"))
+        #expect(prompt.informativeText.contains("Quitting will terminate these programs"))
     }
 
     @Test @MainActor
@@ -176,8 +176,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let workspace = AppModel(
             defaults: isolatedDefaults(workspace: directory),
-            initialRootURL: directory,
-            defaultRootURL: nil
+            initialRootURL: directory
         )
         let firstTerminalID = try #require(workspace.activeTerminalID)
         let firstTabID = try #require(workspace.activeTerminalTab?.id)
@@ -231,8 +230,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let workspace = AppModel(
             defaults: isolatedDefaults(workspace: container),
-            initialRootURL: firstFolder,
-            defaultRootURL: nil
+            initialRootURL: firstFolder
         )
         workspace.addRootDirectory(secondFolder, activate: true)
         let targetTerminalID = try #require(workspace.activeTerminalID)
@@ -261,8 +259,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let workspace = AppModel(
             defaults: isolatedDefaults(workspace: directory),
-            initialRootURL: directory,
-            defaultRootURL: nil
+            initialRootURL: directory
         )
         let terminalID = try #require(workspace.activeTerminalID)
         let notification = AgentAttentionNotification(
@@ -294,8 +291,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let workspace = AppModel(
             defaults: isolatedDefaults(workspace: directory),
-            initialRootURL: directory,
-            defaultRootURL: nil
+            initialRootURL: directory
         )
         let session = try #require(workspace.activeTerminalSession)
 
@@ -318,10 +314,7 @@ struct SpaceTests {
         let defaults = isolatedDefaults(
             workspace: FileManager.default.temporaryDirectory
         )
-        let workspace = AppModel(
-            defaults: defaults,
-            defaultRootURL: nil
-        )
+        let workspace = AppModel(defaults: defaults)
 
         #expect(!workspace.isFolderImporterPresented)
         workspace.chooseRootDirectory()
@@ -331,15 +324,14 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func swiftUIPresentationsCommitRenameAndConfirmedRemoval() throws {
+    func swiftUIPresentationsCommitRenameAndRemoveIdleFolder() throws {
         defer { removeIsolatedDefaults() }
         let folder = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
         let defaults = isolatedDefaults(workspace: folder)
         let workspace = AppModel(
             defaults: defaults,
-            initialRootURL: folder,
-            defaultRootURL: nil
+            initialRootURL: folder
         )
         let terminalID = try #require(workspace.activeTerminalID)
 
@@ -350,33 +342,27 @@ struct SpaceTests {
         #expect(workspace.renameRequest == nil)
 
         workspace.requestRemoveRootDirectory(folder)
-        let alert = try #require(workspace.alertState)
-        #expect(alert.confirmationTitle == "移除并关闭终端")
-        workspace.confirmAlert(alert)
         #expect(workspace.rootURLs.isEmpty)
         #expect(workspace.alertState == nil)
     }
 
     @Test @MainActor
-    func workspaceDefaultsToUserHomeDirectory() throws {
+    func workspaceStartsWithoutDefaultFolder() {
         defer { removeIsolatedDefaults() }
-        let home = try temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: home) }
-        let defaults = isolatedDefaults(workspace: home)
-
-        let workspace = AppModel(
-            defaults: defaults,
-            defaultRootURL: home
+        let defaults = isolatedDefaults(
+            workspace: FileManager.default.homeDirectoryForCurrentUser
         )
 
-        #expect(workspace.rootURLs == [home])
-        #expect(workspace.activeDirectory == home.standardizedFileURL)
-        #expect(workspace.terminalSessions.count == 1)
-        #expect(workspace.activeTerminalSession?.directory == home.standardizedFileURL)
+        let workspace = AppModel(defaults: defaults)
+
+        #expect(workspace.rootURLs.isEmpty)
+        #expect(workspace.activeDirectory == nil)
+        #expect(workspace.terminalSessions.isEmpty)
+        #expect(workspace.activeTerminalSession == nil)
     }
 
     @Test @MainActor
-    func defaultHomeIsAddedOnceAlongsideSavedDirectories() throws {
+    func savedDirectoriesRestoreWithoutAddingHome() throws {
         defer { removeIsolatedDefaults() }
         let home = try temporaryDirectory()
         let saved = home.appendingPathComponent("Saved", isDirectory: true)
@@ -395,20 +381,13 @@ struct SpaceTests {
             forKey: "workspace.activeFolderPath.v1"
         )
 
-        var workspace: AppModel? = AppModel(
-            defaults: defaults,
-            defaultRootURL: home
-        )
-        #expect(workspace?.rootURLs == [home, saved])
+        var workspace: AppModel? = AppModel(defaults: defaults)
+        #expect(workspace?.rootURLs == [saved])
         #expect(workspace?.activeDirectory == saved.standardizedFileURL)
 
-        workspace?.removeRootDirectory(home)
         workspace = nil
 
-        let restored = AppModel(
-            defaults: defaults,
-            defaultRootURL: home
-        )
+        let restored = AppModel(defaults: defaults)
         #expect(restored.rootURLs == [saved])
         #expect(restored.activeDirectory == saved.standardizedFileURL)
     }
@@ -430,10 +409,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let defaults = isolatedDefaults(workspace: container)
 
-        var workspace: AppModel? = AppModel(
-            defaults: defaults,
-            defaultRootURL: nil
-        )
+        var workspace: AppModel? = AppModel(defaults: defaults)
         #expect(workspace?.addRootDirectory(first) == .added(first))
         #expect(workspace?.addRootDirectory(second) == .added(second))
         #expect(workspace?.rootURLs == [first, second])
@@ -463,10 +439,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let defaults = isolatedDefaults(workspace: container)
 
-        var workspace: AppModel? = AppModel(
-            defaults: defaults,
-            defaultRootURL: nil
-        )
+        var workspace: AppModel? = AppModel(defaults: defaults)
         for directory in directories {
             #expect(workspace?.addRootDirectory(directory) == .added(directory))
         }
@@ -508,8 +481,7 @@ struct SpaceTests {
         }
         defer { try? FileManager.default.removeItem(at: container) }
         let workspace = AppModel(
-            defaults: isolatedDefaults(workspace: container),
-            defaultRootURL: nil
+            defaults: isolatedDefaults(workspace: container)
         )
 
         #expect(workspace.addRootDirectory(parent) == .added(parent))
@@ -541,10 +513,7 @@ struct SpaceTests {
         defer { try? FileManager.default.removeItem(at: container) }
         let defaults = isolatedDefaults(workspace: container)
 
-        var workspace: AppModel? = AppModel(
-            defaults: defaults,
-            defaultRootURL: nil
-        )
+        var workspace: AppModel? = AppModel(defaults: defaults)
         workspace?.addRootDirectory(first)
         workspace?.addRootDirectory(second)
         workspace?.removeRootDirectory(second)
@@ -768,8 +737,7 @@ struct SpaceTests {
         }
         let workspace = AppModel(
             defaults: isolatedDefaults(workspace: container),
-            initialRootURL: first,
-            defaultRootURL: nil
+            initialRootURL: first
         )
         let firstTerminalID = try #require(workspace.activeTerminalID)
         workspace.addRootDirectory(second)

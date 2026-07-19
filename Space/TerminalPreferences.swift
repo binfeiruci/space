@@ -13,9 +13,9 @@ enum ApplicationAppearancePreference: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .system: "跟随系统"
-        case .light: "浅色"
-        case .dark: "深色"
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
         }
     }
 
@@ -115,8 +115,8 @@ struct TerminalSettingsView: View {
 
     var body: some View {
         Form {
-            Section("外观") {
-                Picker("配色模式", selection: $preferences.applicationAppearance) {
+            Section("Appearance") {
+                Picker("Color Scheme", selection: $preferences.applicationAppearance) {
                     ForEach(ApplicationAppearancePreference.allCases) { appearance in
                         Text(appearance.title).tag(appearance)
                     }
@@ -124,19 +124,19 @@ struct TerminalSettingsView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("终端配置") {
+            Section("Terminal Configuration") {
                 HStack {
                     TextField(
-                        "配置文件",
+                        "Configuration File",
                         text: $preferences.ghosttyConfigPath
                     )
 
-                    Button("选择…") {
+                    Button("Choose…") {
                         isConfigFileImporterPresented = true
                     }
                 }
 
-                Button("使用 Ghostty 配置") {
+                Button("Use Ghostty Configuration") {
                     preferences.useDefaultGhosttyConfigPath()
                 }
             }

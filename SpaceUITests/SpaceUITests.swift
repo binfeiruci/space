@@ -106,7 +106,7 @@ final class SpaceUITests: XCTestCase {
         XCTAssertLessThanOrEqual(
             widthRatio,
             2.0 / 3.0 + 0.02,
-            "Tab 栏不应超过窗口宽度的 2/3"
+            "The tab bar should not exceed two-thirds of the window width"
         )
 
     }
@@ -122,7 +122,7 @@ final class SpaceUITests: XCTestCase {
         terminalTitle.doubleClick()
 
         XCTAssertTrue(
-            app.staticTexts["重命名终端"].waitForExistence(timeout: 3)
+            app.staticTexts["Rename Terminal"].waitForExistence(timeout: 3)
         )
     }
 
