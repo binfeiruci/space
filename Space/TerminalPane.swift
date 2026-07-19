@@ -2,32 +2,32 @@ import AppKit
 import GhosttyTerminal
 import SwiftUI
 
-struct TerminalWorkspacePane: View {
-    @EnvironmentObject private var workspace: AppModel
+struct TerminalArea: View {
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         ZStack {
-            ForEach(workspace.terminalTabs) { tab in
+            ForEach(model.terminalTabs) { tab in
                 TerminalSplitTree(
                     node: tab.root,
-                    isVisible: workspace.activeTerminalTab?.id == tab.id
+                    isVisible: model.activeTerminalTab?.id == tab.id
                 )
-                .opacity(workspace.activeTerminalTab?.id == tab.id ? 1 : 0)
-                .allowsHitTesting(workspace.activeTerminalTab?.id == tab.id)
-                .accessibilityHidden(workspace.activeTerminalTab?.id != tab.id)
+                .opacity(model.activeTerminalTab?.id == tab.id ? 1 : 0)
+                .allowsHitTesting(model.activeTerminalTab?.id == tab.id)
+                .accessibilityHidden(model.activeTerminalTab?.id != tab.id)
             }
 
-            if workspace.activeDirectoryTabs.isEmpty {
+            if model.activeFolderTabs.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "terminal")
                         .font(.system(size: 28))
                         .foregroundStyle(.tertiary)
-                    Text("No terminals are open in this folder")
+                    Text("No tabs are open in this folder")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Button("New Terminal") {
-                        if let directory = workspace.activeDirectory {
-                            workspace.openNewTerminal(for: directory)
+                    Button("New Tab") {
+                        if let folderURL = model.activeFolderURL {
+                            model.openNewTerminal(for: folderURL)
                         }
                     }
                 }
@@ -43,8 +43,8 @@ struct TerminalWorkspacePane: View {
 
     private func processHiddenTerminalEvents() {
         guard NSApp.isActive else { return }
-        let visibleTerminalIDs = Set(workspace.activeTabTerminalIDs)
-        for session in workspace.terminalSessions
+        let visibleTerminalIDs = Set(model.activeTabTerminalIDs)
+        for session in model.terminalSessions
         where !visibleTerminalIDs.contains(session.id) {
             session.terminal.controller.tick()
         }
@@ -52,7 +52,7 @@ struct TerminalWorkspacePane: View {
 }
 
 private struct TerminalSplitTree: View {
-    @EnvironmentObject private var workspace: AppModel
+    @EnvironmentObject private var model: AppModel
     let node: TerminalSplitNode
     let isVisible: Bool
 
@@ -63,19 +63,19 @@ private struct TerminalSplitTree: View {
     private var renderedNode: AnyView {
         switch node {
         case let .pane(id):
-            guard let session = workspace.terminalSessions.first(where: {
+            guard let session = model.terminalSessions.first(where: {
                 $0.id == id
             }) else {
                 return AnyView(EmptyView())
             }
-            let isFocused = workspace.activeTerminalID == id
+            let isFocused = model.activeTerminalID == id
             return AnyView(
                 GhosttyTerminalPane(
                     session: session,
                     isVisible: isVisible,
                     isFocused: isFocused
-                ) { [weak workspace] in
-                    workspace?.selectTerminal(id)
+                ) { [weak model] in
+                    model?.selectTerminal(id)
                 }
                 .id(session.id)
                 .frame(
@@ -113,7 +113,7 @@ private struct TerminalSplitTree: View {
 }
 
 private struct TerminalSplitContainer: View {
-    @EnvironmentObject private var workspace: AppModel
+    @EnvironmentObject private var model: AppModel
     let splitID: UUID
     let axis: TerminalSplitAxis
     let ratio: CGFloat
@@ -212,7 +212,7 @@ private struct TerminalSplitContainer: View {
                     )
                 }
                 .onEnded { _ in
-                    workspace.updateSplitRatio(displayedRatio, for: splitID)
+                    model.updateSplitRatio(displayedRatio, for: splitID)
                 }
         )
         .accessibilityElement()
@@ -255,14 +255,17 @@ private struct TerminalSplitContainer: View {
 }
 
 struct TerminalTitleBarContent: View {
-    @EnvironmentObject private var workspace: AppModel
+    @EnvironmentObject private var model: AppModel
     let maximumTabStripWidth: CGFloat
 
     @ViewBuilder
     var body: some View {
-        if workspace.activeDirectoryTabs.count == 1,
-           let session = workspace.activeTerminalSession {
-            TerminalTitleBarTitle(session: session)
+        if model.activeFolderTabs.count == 1,
+           let tab = model.activeTerminalTab,
+           let session = model.terminalSessions.first(where: {
+               $0.id == tab.focusedTerminalID
+           }) {
+            TerminalTitleBarTitle(tab: tab, session: session)
         } else {
             TerminalTabStrip(maximumWidth: maximumTabStripWidth)
         }
@@ -270,21 +273,25 @@ struct TerminalTitleBarContent: View {
 }
 
 private struct TerminalTitleBarTitle: View {
-    @EnvironmentObject private var workspace: AppModel
+    @EnvironmentObject private var model: AppModel
+    let tab: TerminalTabState
     @ObservedObject var session: TerminalSession
     @ObservedObject private var terminal: TerminalViewState
     @State private var foregroundProcessName: String?
 
-    init(session: TerminalSession) {
+    init(tab: TerminalTabState, session: TerminalSession) {
+        self.tab = tab
         _session = ObservedObject(wrappedValue: session)
         _terminal = ObservedObject(wrappedValue: session.terminal)
         _foregroundProcessName = State(initialValue: session.currentProcessName)
     }
 
     private var title: String {
-        session.displayTitle(
-            terminalTitle: terminal.title,
-            foregroundProcessName: foregroundProcessName
+        tab.displayTitle(
+            automaticTitle: session.displayTitle(
+                terminalTitle: terminal.title,
+                foregroundProcessName: foregroundProcessName
+            )
         )
     }
 
@@ -304,7 +311,7 @@ private struct TerminalTitleBarTitle: View {
         .accessibilityIdentifier("terminal-title")
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
-                workspace.promptRenameTerminal(session.id)
+                model.promptRenameTab(tab.id)
             }
         )
         .task {
@@ -317,7 +324,7 @@ private struct TerminalTitleBarTitle: View {
 }
 
 struct TerminalTabStrip: View {
-    @EnvironmentObject private var workspace: AppModel
+    @EnvironmentObject private var model: AppModel
     let maximumWidth: CGFloat
     @State private var contentWidth: CGFloat = 1
 
@@ -349,7 +356,7 @@ struct TerminalTabStrip: View {
                 .onAppear {
                     scrollToActiveTab(using: proxy, animated: false)
                 }
-                .onChange(of: workspace.activeTerminalTab?.id) { _, _ in
+                .onChange(of: model.activeTerminalTab?.id) { _, _ in
                     scrollToActiveTab(using: proxy, animated: true)
                 }
                 .onChange(of: maximumWidth) { _, _ in
@@ -357,20 +364,7 @@ struct TerminalTabStrip: View {
                 }
             }
 
-            Button {
-                guard let directory = workspace.activeDirectory else { return }
-                workspace.openNewTerminal(for: directory)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: newTabButtonWidth, height: 28)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New Terminal (⌘T)")
-            .accessibilityLabel("New Terminal")
-            .accessibilityIdentifier("new-terminal-tab-button")
+            NewTerminalTabButton()
         }
         .frame(width: width)
         .frame(height: 28)
@@ -379,25 +373,25 @@ struct TerminalTabStrip: View {
     }
 
     private var tabRow: some View {
-        let tabs = workspace.activeDirectoryTabs
+        let tabs = model.activeFolderTabs
 
         return HStack(spacing: 4) {
             ForEach(Array(tabs.enumerated()), id: \.element.id) { index, tab in
-                if let session = workspace.terminalSessions.first(where: {
+                if let session = model.terminalSessions.first(where: {
                     $0.id == tab.focusedTerminalID
                 }) {
                     TerminalTab(
-                        tabID: tab.id,
+                        tab: tab,
                         session: session,
-                        isActive: workspace.activeTerminalTab?.id == tab.id,
+                        isActive: model.activeTerminalTab?.id == tab.id,
                         shortcutLabel: shortcutLabel(
                             at: index,
                             tabCount: tabs.count
                         )
                     ) {
-                        workspace.selectTab(tab.id)
+                        model.selectTab(tab.id)
                     } close: {
-                        workspace.requestCloseTab(tab.id)
+                        model.requestCloseTab(tab.id)
                     }
                     .id(tab.id)
                 }
@@ -415,7 +409,7 @@ struct TerminalTabStrip: View {
         using proxy: ScrollViewProxy,
         animated: Bool
     ) {
-        guard let tabID = workspace.activeTerminalTab?.id else { return }
+        guard let tabID = model.activeTerminalTab?.id else { return }
         if animated {
             withAnimation(.easeOut(duration: 0.15)) {
                 proxy.scrollTo(tabID, anchor: .center)
@@ -427,8 +421,8 @@ struct TerminalTabStrip: View {
 }
 
 private struct TerminalTab: View {
-    @EnvironmentObject private var workspace: AppModel
-    let tabID: UUID
+    @EnvironmentObject private var model: AppModel
+    let tab: TerminalTabState
     @ObservedObject var session: TerminalSession
     @ObservedObject private var terminal: TerminalViewState
     let isActive: Bool
@@ -439,14 +433,14 @@ private struct TerminalTab: View {
     @State private var isHovering = false
 
     init(
-        tabID: UUID,
+        tab: TerminalTabState,
         session: TerminalSession,
         isActive: Bool,
         shortcutLabel: String?,
         select: @escaping () -> Void,
         close: @escaping () -> Void
     ) {
-        self.tabID = tabID
+        self.tab = tab
         _session = ObservedObject(wrappedValue: session)
         _terminal = ObservedObject(wrappedValue: session.terminal)
         self.isActive = isActive
@@ -457,9 +451,11 @@ private struct TerminalTab: View {
     }
 
     private var title: String {
-        session.displayTitle(
-            terminalTitle: terminal.title,
-            foregroundProcessName: foregroundProcessName
+        tab.displayTitle(
+            automaticTitle: session.displayTitle(
+                terminalTitle: terminal.title,
+                foregroundProcessName: foregroundProcessName
+            )
         )
     }
 
@@ -475,13 +471,13 @@ private struct TerminalTab: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
 
-                    if workspace.tabNeedsAgentAttention(tabID) {
+                    if model.tabNeedsAgentAttention(tab.id) {
                         Circle()
                             .fill(.orange)
                             .frame(width: 7, height: 7)
                             .accessibilityLabel("Agent needs attention")
                             .accessibilityIdentifier(
-                                "agent-attention-tab:\(tabID.uuidString)"
+                                "agent-attention-tab:\(tab.id.uuidString)"
                             )
                     }
 
@@ -509,8 +505,8 @@ private struct TerminalTab: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Close Terminal Tab")
-            .accessibilityLabel("Close terminal tab \(title)")
+            .help("Close Tab")
+            .accessibilityLabel("Close tab \(title)")
             .padding(.trailing, 5)
             .opacity(isActive || isHovering ? 1 : 0)
             .allowsHitTesting(isActive || isHovering)
@@ -531,16 +527,16 @@ private struct TerminalTab: View {
         .accessibilityLabel(title)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
-        .draggable(tabID.uuidString)
+        .draggable(tab.id.uuidString)
         .dropDestination(for: String.self) { values, _ in
             guard let value = values.first,
                   let sourceID = UUID(uuidString: value) else { return false }
-            workspace.moveTab(sourceID, to: tabID)
+            model.moveTab(sourceID, to: tab.id)
             return true
         }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
-                workspace.promptRenameTerminal(session.id)
+                model.promptRenameTab(tab.id)
             }
         )
         .task {
@@ -551,6 +547,27 @@ private struct TerminalTab: View {
         }
     }
 
+}
+
+private struct NewTerminalTabButton: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Button {
+            guard let folderURL = model.activeFolderURL else { return }
+            model.openNewTerminal(for: folderURL)
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("New Tab (⌘T)")
+        .accessibilityLabel("New Tab")
+        .accessibilityIdentifier("new-terminal-tab-button")
+    }
 }
 
 private struct GhosttyTerminalPane: View {
@@ -746,11 +763,34 @@ private final class SpaceTerminalView: TerminalView {
         super.mouseDown(with: event)
     }
 
+    override func firstRect(
+        forCharacterRange range: NSRange,
+        actualRange: NSRangePointer?
+    ) -> NSRect {
+        LibghosttyInputMethodWorkaround.correctedAnchorRect(
+            super.firstRect(
+                forCharacterRange: range,
+                actualRange: actualRange
+            )
+        )
+    }
+
     private func applyFocusRequest() {
         guard let window else { return }
         window.initialFirstResponder = self
         if window.firstResponder !== self {
             window.makeFirstResponder(self)
         }
+    }
+}
+
+enum LibghosttyInputMethodWorkaround {
+    static func correctedAnchorRect(_ rect: NSRect) -> NSRect {
+        guard rect != .zero else { return rect }
+
+        // libghostty-spm subtracts the cell height when converting Ghostty's
+        // top-edge IME point to AppKit coordinates. Undo only that offset and
+        // leave candidate-window placement to the input method.
+        return rect.offsetBy(dx: 0, dy: rect.height)
     }
 }

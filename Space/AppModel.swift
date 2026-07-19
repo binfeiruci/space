@@ -5,13 +5,13 @@ import Darwin
 import Foundation
 import GhosttyTerminal
 
-enum WorkspaceRootAdditionResult: Equatable {
+enum FolderAdditionResult: Equatable {
     case added(URL)
     case invalid(URL)
     case duplicate(URL)
 }
 
-struct WorkspaceFolder: Identifiable, Equatable {
+struct Folder: Identifiable, Equatable {
     let url: URL
 
     var id: String {
@@ -19,9 +19,9 @@ struct WorkspaceFolder: Identifiable, Equatable {
     }
 }
 
-struct WorkspaceAlertState: Identifiable, Equatable {
+struct AlertRequest: Identifiable, Equatable {
     enum Action: Equatable {
-        case removeRoot(URL)
+        case removeFolder(URL)
         case closeTerminal(UUID)
         case closeTab(UUID)
     }
@@ -33,10 +33,11 @@ struct WorkspaceAlertState: Identifiable, Equatable {
     let action: Action?
 }
 
-struct TerminalRenameRequest: Identifiable, Equatable {
+struct TabRenameRequest: Identifiable, Equatable {
     let id = UUID()
-    let terminalID: UUID
+    let tabID: UUID
     let initialTitle: String
+    let automaticTitle: String
 }
 
 struct AgentAttentionNotification: Identifiable, Equatable {
@@ -61,6 +62,7 @@ struct AgentAttentionNotification: Identifiable, Equatable {
 struct MemoSaveNotice: Identifiable, Equatable {
     let id = UUID()
     let message: String
+    let systemImage: String
 }
 
 enum TerminalSearchAction {
@@ -82,11 +84,11 @@ enum FolderMemoFile {
         _ text: String,
         date: Date = Date(),
         timeZone: TimeZone = .current,
-        in directory: URL
+        in folderURL: URL
     ) throws {
         guard !text.isEmpty else { return }
 
-        let fileURL = directory.appendingPathComponent(filename)
+        let fileURL = folderURL.appendingPathComponent(filename)
         let fileManager = FileManager.default
         let exists = fileManager.fileExists(atPath: fileURL.path)
         var data = Data()
@@ -393,24 +395,32 @@ indirect enum TerminalSplitNode: Equatable {
 
 struct TerminalTabState: Identifiable, Equatable {
     let id: UUID
-    let directory: URL
+    let folderURL: URL
     var root: TerminalSplitNode
     var focusedTerminalID: UUID
+    var customTitle: String? = nil
 
     var terminalIDs: [UUID] {
         root.terminalIDs
+    }
+
+    func displayTitle(automaticTitle: String) -> String {
+        guard let customTitle,
+              !customTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                  .isEmpty else { return automaticTitle }
+        return customTitle
     }
 }
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published private(set) var folders: [WorkspaceFolder]
-    @Published private(set) var activeDirectory: URL?
+    @Published private(set) var folders: [Folder]
+    @Published private(set) var activeFolderURL: URL?
     @Published private(set) var terminalSessions: [TerminalSession]
     @Published private(set) var terminalTabs: [TerminalTabState]
     @Published private(set) var activeTerminalID: UUID?
-    @Published private(set) var alertState: WorkspaceAlertState?
-    @Published private(set) var renameRequest: TerminalRenameRequest?
+    @Published private(set) var alertRequest: AlertRequest?
+    @Published private(set) var renameRequest: TabRenameRequest?
     @Published private(set) var memoSaveNotice: MemoSaveNotice?
     @Published private(set) var isFolderImporterPresented = false
     @Published private(set) var isSidebarVisible = true
@@ -418,7 +428,7 @@ final class AppModel: ObservableObject {
         [UUID: AgentAttentionNotification] = [:]
     @Published private var refreshingTitleFrameByTerminalID: [UUID: String] = [:]
 
-    let terminalPreferences: TerminalPreferences
+    let settings: AppSettings
     var agentAttentionHandler:
         ((UUID, URL, AgentAttentionNotification) -> Void)?
     var agentAttentionClearedHandler: ((UUID) -> Void)?
@@ -427,63 +437,63 @@ final class AppModel: ObservableObject {
     private var agentAttentionCancellables: [UUID: AnyCancellable] = [:]
     private var agentAttentionFocusCancellables: [UUID: AnyCancellable] = [:]
     private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
-    private var recentlyClosedTerminalDirectories: [URL] = []
-    private var lastActiveTabIDByDirectory: [String: UUID] = [:]
+    private var recentlyClosedTerminalFolderURLs: [URL] = []
+    private var lastActiveTabIDByFolderPath: [String: UUID] = [:]
 
     init(
         defaults: UserDefaults = .standard,
-        initialRootURL: URL? = nil
+        initialFolderURL: URL? = nil
     ) {
         self.defaults = defaults
-        terminalPreferences = TerminalPreferences(defaults: defaults)
+        settings = AppSettings(defaults: defaults)
 
-        let restoredRoots = Self.restoredRootDirectories(from: defaults)
-        let roots: [URL]
-        if let initialRoot = Self.validDirectory(initialRootURL) {
-            roots = [initialRoot]
+        let restoredFolders = Self.restoredFolders(from: defaults)
+        let folderURLs: [URL]
+        if let initialFolder = Self.validFolderURL(initialFolderURL) {
+            folderURLs = [initialFolder]
         } else {
-            roots = restoredRoots
+            folderURLs = restoredFolders
         }
-        let restoredActiveDirectory = Self.restoredActiveDirectory(
+        let restoredActiveFolderURL = Self.restoredActiveFolderURL(
             from: defaults,
-            roots: roots
+            folders: folderURLs
         )
-        let initialDirectory = restoredActiveDirectory ?? roots.first
+        let initialFolderURL = restoredActiveFolderURL ?? folderURLs.first
 
-        folders = roots.map { WorkspaceFolder(url: $0) }
-        activeDirectory = initialDirectory
+        folders = folderURLs.map { Folder(url: $0) }
+        activeFolderURL = initialFolderURL
         terminalSessions = []
         terminalTabs = []
         activeTerminalID = nil
 
-        if let initialDirectory {
+        if let initialFolderURL {
             let initialSession = TerminalSession(
-                directory: initialDirectory,
-                preferences: terminalPreferences
+                folderURL: initialFolderURL,
+                settings: settings
             )
             terminalSessions = [initialSession]
             terminalTabs = [TerminalTabState(
                 id: initialSession.id,
-                directory: initialDirectory,
+                folderURL: initialFolderURL,
                 root: .pane(initialSession.id),
                 focusedTerminalID: initialSession.id
             )]
             activeTerminalID = initialSession.id
-            lastActiveTabIDByDirectory[initialDirectory.path] = initialSession.id
+            lastActiveTabIDByFolderPath[initialFolderURL.path] = initialSession.id
             bindCloseHandler(to: initialSession)
         }
-        persistWorkspaceState()
+        persistFolderState()
     }
 
-    var rootURLs: [URL] {
+    var folderURLs: [URL] {
         folders.map(\.url)
     }
 
-    var activeDirectoryTabs: [TerminalTabState] {
-        guard let activeDirectory else { return [] }
-        let activePath = activeDirectory.standardizedFileURL.path
+    var activeFolderTabs: [TerminalTabState] {
+        guard let activeFolderURL else { return [] }
+        let activePath = activeFolderURL.standardizedFileURL.path
         return terminalTabs.filter {
-            $0.directory.standardizedFileURL.path == activePath
+            $0.folderURL.standardizedFileURL.path == activePath
         }
     }
 
@@ -502,10 +512,10 @@ final class AppModel: ObservableObject {
     }
 
     var canRestoreClosedTerminal: Bool {
-        !recentlyClosedTerminalDirectories.isEmpty
+        !recentlyClosedTerminalFolderURLs.isEmpty
     }
 
-    func chooseRootDirectory() {
+    func chooseFolder() {
         isFolderImporterPresented = true
     }
 
@@ -520,21 +530,36 @@ final class AppModel: ObservableObject {
 
         let pasteboard = NSPasteboard.general
         let pasteboardSnapshot = PasteboardSnapshot(pasteboard)
-        guard terminalView.copySelectedTextToPasteboard() else { return false }
+        guard terminalView.copySelectedTextToPasteboard() else {
+            memoSaveNotice = MemoSaveNotice(
+                message: "No text selected.",
+                systemImage: "exclamationmark.circle"
+            )
+            return false
+        }
         defer { pasteboardSnapshot.restore(to: pasteboard) }
         guard let selection = pasteboard.string(forType: .string),
-              !selection.isEmpty else { return false }
+              !selection.isEmpty else {
+            memoSaveNotice = MemoSaveNotice(
+                message: "No text selected.",
+                systemImage: "exclamationmark.circle"
+            )
+            return false
+        }
 
         do {
             try FolderMemoFile.append(
                 selection,
-                in: session.directory
+                in: session.folderURL
             )
-            memoSaveNotice = MemoSaveNotice(message: "Saved to .memo")
+            memoSaveNotice = MemoSaveNotice(
+                message: "Added to .memo",
+                systemImage: "checkmark"
+            )
             return true
         } catch {
-            alertState = WorkspaceAlertState(
-                title: "Unable to Save Memo",
+            alertRequest = AlertRequest(
+                title: "Unable to Update .memo",
                 message: error.localizedDescription,
                 confirmationTitle: nil,
                 action: nil
@@ -552,24 +577,24 @@ final class AppModel: ObservableObject {
         isSidebarVisible.toggle()
     }
 
-    func addRootDirectories(_ urls: [URL]) {
-        var results: [WorkspaceRootAdditionResult] = []
+    func addFolders(_ urls: [URL]) {
+        var results: [FolderAdditionResult] = []
         var lastAddedFolder: URL?
         for url in urls {
-            let result = addRootDirectory(url, activate: false)
+            let result = addFolder(url, activate: false)
             results.append(result)
             if case let .added(folder) = result {
                 lastAddedFolder = folder
             }
         }
         if let lastAddedFolder {
-            activateTerminal(for: lastAddedFolder)
+            activateFolder(lastAddedFolder)
         }
-        presentRootAdditionFailures(results)
+        presentFolderAdditionFailures(results)
     }
 
     func presentFolderImportError(_ error: Error) {
-        alertState = WorkspaceAlertState(
+        alertRequest = AlertRequest(
             title: "Unable to Add Folder",
             message: error.localizedDescription,
             confirmationTitle: nil,
@@ -578,66 +603,66 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func addRootDirectory(
+    func addFolder(
         _ url: URL,
         activate: Bool = true
-    ) -> WorkspaceRootAdditionResult {
-        guard let directory = Self.validDirectory(url) else {
+    ) -> FolderAdditionResult {
+        guard let folderURL = Self.validFolderURL(url) else {
             return .invalid(url.standardizedFileURL)
         }
-        if rootURLs.contains(where: {
-            $0.standardizedFileURL.path == directory.path
+        if folderURLs.contains(where: {
+            $0.standardizedFileURL.path == folderURL.path
         }) {
-            return .duplicate(directory)
+            return .duplicate(folderURL)
         }
-        folders.append(WorkspaceFolder(url: directory))
-        persistWorkspaceState()
+        folders.append(Folder(url: folderURL))
+        persistFolderState()
 
         if activate {
-            activateTerminal(for: directory)
+            activateFolder(folderURL)
         }
-        return .added(directory)
+        return .added(folderURL)
     }
 
-    func rootDirectory(containing url: URL) -> URL? {
-        rootURLs
-            .filter { Self.isInside(url, root: $0) }
+    func folderURL(containing url: URL) -> URL? {
+        folderURLs
+            .filter { Self.isInside(url, folder: $0) }
             .max { $0.path.count < $1.path.count }
     }
 
-    func requestRemoveRootDirectory(_ url: URL) {
-        guard let root = rootURLs.first(where: {
+    func requestRemoveFolder(_ url: URL) {
+        guard let folder = folderURLs.first(where: {
             $0.standardizedFileURL.path == url.standardizedFileURL.path
         }) else { return }
-        let rootPath = root.standardizedFileURL.path
-        let rootSessions = terminalSessions.filter {
-            $0.directory.standardizedFileURL.path == rootPath
+        let folderPath = folder.standardizedFileURL.path
+        let folderSessions = terminalSessions.filter {
+            $0.folderURL.standardizedFileURL.path == folderPath
         }
-        guard rootSessions.contains(where: \.isRunningForegroundProgram) else {
-            removeRootDirectory(root)
+        guard folderSessions.contains(where: \.isRunningForegroundProgram) else {
+            removeFolder(folder)
             return
         }
 
-        let sessionCount = rootSessions.count
+        let sessionCount = folderSessions.count
         let terminalCount = sessionCount == 1
             ? "1 terminal"
             : "\(sessionCount) terminals"
-        alertState = WorkspaceAlertState(
-            title: "Remove Folder “\(root.lastPathComponent)”?",
-            message: "This will close \(terminalCount) for this folder and terminate any running programs.",
+        alertRequest = AlertRequest(
+            title: "Remove Folder “\(folder.lastPathComponent)”?",
+            message: "This will close \(terminalCount) for this folder and terminate any running processes.",
             confirmationTitle: "Remove and Close Terminals",
-            action: .removeRoot(root)
+            action: .removeFolder(folder)
         )
     }
 
-    func removeRootDirectory(_ url: URL) {
-        let root = url.standardizedFileURL
-        guard let rootIndex = folders.firstIndex(where: {
-            $0.url.standardizedFileURL.path == root.path
+    func removeFolder(_ url: URL) {
+        let folder = url.standardizedFileURL
+        guard let folderIndex = folders.firstIndex(where: {
+            $0.url.standardizedFileURL.path == folder.path
         }) else { return }
 
         let removedSessionIDs = Set(terminalSessions.compactMap { session in
-            session.directory.standardizedFileURL.path == root.path
+            session.folderURL.standardizedFileURL.path == folder.path
                 ? session.id
                 : nil
         })
@@ -650,90 +675,90 @@ final class AppModel: ObservableObject {
         }
         terminalSessions.removeAll { removedSessionIDs.contains($0.id) }
         terminalTabs.removeAll {
-            $0.directory.standardizedFileURL.path == root.path
+            $0.folderURL.standardizedFileURL.path == folder.path
         }
-        recentlyClosedTerminalDirectories.removeAll {
-            $0.standardizedFileURL.path == root.path
+        recentlyClosedTerminalFolderURLs.removeAll {
+            $0.standardizedFileURL.path == folder.path
         }
-        folders.remove(at: rootIndex)
-        lastActiveTabIDByDirectory.removeValue(forKey: root.path)
+        folders.remove(at: folderIndex)
+        lastActiveTabIDByFolderPath.removeValue(forKey: folder.path)
 
         if activeTerminalID.map(removedSessionIDs.contains) == true {
             activeTerminalID = nil
         }
         if let activeTerminalSession {
-            activeDirectory = activeTerminalSession.directory
+            activeFolderURL = activeTerminalSession.folderURL
         } else if let remainingTab = terminalTabs.last {
-            activeDirectory = remainingTab.directory
+            activeFolderURL = remainingTab.folderURL
             activeTerminalID = remainingTab.focusedTerminalID
-        } else if let firstRoot = rootURLs.first {
-            activeDirectory = firstRoot
-            openNewTerminal(for: firstRoot)
+        } else if let firstFolder = folderURLs.first {
+            activeFolderURL = firstFolder
+            openNewTerminal(for: firstFolder)
         } else {
-            activeDirectory = nil
+            activeFolderURL = nil
             activeTerminalID = nil
         }
 
-        persistWorkspaceState()
+        persistFolderState()
     }
 
-    func setFolderOrder(_ orderedFolders: [WorkspaceFolder]) {
+    func setFolderOrder(_ orderedFolders: [Folder]) {
         guard orderedFolders.count == folders.count,
               Set(orderedFolders.map(\.id)) == Set(folders.map(\.id)) else {
             return
         }
         folders = orderedFolders
-        persistWorkspaceState()
+        persistFolderState()
     }
 
-    func activateTerminal(for url: URL) {
-        guard let folder = rootDirectory(containing: url.standardizedFileURL)
+    func activateFolder(_ url: URL) {
+        guard let folderURL = folderURL(containing: url.standardizedFileURL)
         else { return }
 
-        let folderPath = folder.path
-        if let terminalID = latestAgentAttentionTerminalID(in: folder) {
+        let folderPath = folderURL.path
+        if let terminalID = latestAgentAttentionTerminalID(in: folderURL) {
             selectTerminal(terminalID)
             return
         }
-        let rememberedTab = lastActiveTabIDByDirectory[folderPath].flatMap {
+        let rememberedTab = lastActiveTabIDByFolderPath[folderPath].flatMap {
             rememberedID in terminalTabs.first(where: {
                 $0.id == rememberedID
-                    && $0.directory.standardizedFileURL.path == folderPath
+                    && $0.folderURL.standardizedFileURL.path == folderPath
             })
         }
         if let existing = rememberedTab ?? terminalTabs.last(where: {
-            $0.directory.standardizedFileURL.path == folderPath
+            $0.folderURL.standardizedFileURL.path == folderPath
         }) {
-            activeDirectory = folder
+            activeFolderURL = folderURL
             activeTerminalID = existing.focusedTerminalID
-            lastActiveTabIDByDirectory[folderPath] = existing.id
-            persistWorkspaceState()
+            lastActiveTabIDByFolderPath[folderPath] = existing.id
+            persistFolderState()
             return
         }
 
-        openNewTerminal(for: folder)
+        openNewTerminal(for: folderURL)
     }
 
     func openNewTerminal(for url: URL) {
-        guard let folder = rootDirectory(containing: url.standardizedFileURL)
+        guard let folderURL = folderURL(containing: url.standardizedFileURL)
         else { return }
 
         let session = TerminalSession(
-            directory: folder,
-            preferences: terminalPreferences
+            folderURL: folderURL,
+            settings: settings
         )
         bindCloseHandler(to: session)
-        activeDirectory = folder
+        activeFolderURL = folderURL
         terminalSessions.append(session)
         terminalTabs.append(TerminalTabState(
             id: session.id,
-            directory: folder,
+            folderURL: folderURL,
             root: .pane(session.id),
             focusedTerminalID: session.id
         ))
         activeTerminalID = session.id
-        lastActiveTabIDByDirectory[folder.path] = session.id
-        persistWorkspaceState()
+        lastActiveTabIDByFolderPath[folderURL.path] = session.id
+        persistFolderState()
     }
 
     func splitActiveTerminal(direction: TerminalSplitDirection) {
@@ -761,8 +786,8 @@ final class AppModel: ObservableObject {
               }) else { return nil }
 
         let session = TerminalSession(
-            directory: activeSession.directory,
-            preferences: terminalPreferences,
+            folderURL: activeSession.folderURL,
+            settings: settings,
             surfaceContext: .split
         )
         bindCloseHandler(to: session)
@@ -774,9 +799,9 @@ final class AppModel: ObservableObject {
         ).balancedForEqualSplits()
         terminalTabs[tabIndex].focusedTerminalID = session.id
         self.activeTerminalID = session.id
-        lastActiveTabIDByDirectory[activeSession.directory.path] =
+        lastActiveTabIDByFolderPath[activeSession.folderURL.path] =
             terminalTabs[tabIndex].id
-        persistWorkspaceState()
+        persistFolderState()
         return session
     }
 
@@ -786,12 +811,12 @@ final class AppModel: ObservableObject {
                   $0.root.contains(id)
               }) else { return }
         terminalTabs[tabIndex].focusedTerminalID = id
-        activeDirectory = session.directory
+        activeFolderURL = session.folderURL
         activeTerminalID = session.id
         clearAgentAttention(for: id)
-        lastActiveTabIDByDirectory[session.directory.standardizedFileURL.path] =
+        lastActiveTabIDByFolderPath[session.folderURL.standardizedFileURL.path] =
             terminalTabs[tabIndex].id
-        persistWorkspaceState()
+        persistFolderState()
     }
 
     func selectTab(_ id: UUID) {
@@ -816,7 +841,7 @@ final class AppModel: ObservableObject {
     func folderRefreshingTitleFrame(_ url: URL) -> String? {
         let path = url.standardizedFileURL.path
         for session in terminalSessions.reversed()
-        where session.directory.standardizedFileURL.path == path {
+        where session.folderURL.standardizedFileURL.path == path {
             if let frame = refreshingTitleFrameByTerminalID[session.id] {
                 return frame
             }
@@ -872,7 +897,7 @@ final class AppModel: ObservableObject {
         }
 
         agentAttentionByTerminalID[terminalID] = notification
-        agentAttentionHandler?(terminalID, session.directory, notification)
+        agentAttentionHandler?(terminalID, session.folderURL, notification)
     }
 
     func clearVisibleAgentAttention() {
@@ -886,23 +911,23 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func selectTerminal(at index: Int) -> Bool {
-        let tabs = activeDirectoryTabs
+    func selectTab(at index: Int) -> Bool {
+        let tabs = activeFolderTabs
         guard tabs.indices.contains(index) else { return false }
         selectTab(tabs[index].id)
         return true
     }
 
     @discardableResult
-    func selectLastTerminal() -> Bool {
-        guard let tab = activeDirectoryTabs.last else { return false }
+    func selectLastTab() -> Bool {
+        guard let tab = activeFolderTabs.last else { return false }
         selectTab(tab.id)
         return true
     }
 
     @discardableResult
-    func selectAdjacentTerminal(offset: Int) -> Bool {
-        let tabs = activeDirectoryTabs
+    func selectAdjacentTab(offset: Int) -> Bool {
+        let tabs = activeFolderTabs
         guard tabs.count > 1,
               let activeTab = activeTerminalTab,
               let index = tabs.firstIndex(where: {
@@ -916,13 +941,13 @@ final class AppModel: ObservableObject {
     @discardableResult
     func selectAdjacentFolder(offset: Int) -> Bool {
         guard folders.count > 1,
-              let activeDirectory,
-              let activeFolder = rootDirectory(containing: activeDirectory),
+              let activeFolderURL,
+              let activeFolder = folderURL(containing: activeFolderURL),
               let index = folders.firstIndex(where: {
                   $0.url.standardizedFileURL.path == activeFolder.path
               }) else { return false }
         let next = (index + offset + folders.count) % folders.count
-        activateTerminal(for: folders[next].url)
+        activateFolder(folders[next].url)
         return true
     }
 
@@ -947,8 +972,8 @@ final class AppModel: ObservableObject {
               let targetIndex = terminalTabs.firstIndex(where: {
                   $0.id == targetTabID
               }),
-              terminalTabs[sourceIndex].directory
-                  == terminalTabs[targetIndex].directory else { return }
+              terminalTabs[sourceIndex].folderURL
+                  == terminalTabs[targetIndex].folderURL else { return }
         let tab = terminalTabs.remove(at: sourceIndex)
         guard let updatedTargetIndex = terminalTabs.firstIndex(where: {
             $0.id == targetTabID
@@ -968,15 +993,15 @@ final class AppModel: ObservableObject {
         guard let session = terminalSessions.first(where: {
             $0.id == id
         }) else { return }
-        guard session.isRunningForegroundProgram else {
+        guard let runningProcessName = session.runningForegroundProcessName else {
             closeTerminal(id)
             return
         }
 
-        alertState = WorkspaceAlertState(
-            title: "Close Running Terminal?",
-            message: (session.currentProcessName ?? "A program")
-                + " is still running. Closing the terminal will terminate the process.",
+        alertRequest = AlertRequest(
+            title: "Close Terminal with Running Process?",
+            message: runningProcessName
+                + " is still running. Closing this terminal will terminate it.",
             confirmationTitle: "Close Terminal",
             action: .closeTerminal(id)
         )
@@ -986,7 +1011,7 @@ final class AppModel: ObservableObject {
         guard let tab = terminalTabs.first(where: { $0.id == id }) else { return }
         let runningPrograms = tab.terminalIDs.compactMap { terminalID in
             terminalSessions.first(where: { $0.id == terminalID }).flatMap {
-                $0.isRunningForegroundProgram ? $0.currentProcessName : nil
+                $0.runningForegroundProcessName
             }
         }
         guard !runningPrograms.isEmpty else {
@@ -994,14 +1019,16 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let splitCount = runningPrograms.count == 1
-            ? "1 split is"
-            : "\(runningPrograms.count) splits are"
-        alertState = WorkspaceAlertState(
-            title: "Close Terminal Tab with Running Commands?",
-            message: "\(splitCount) still running commands: "
+        let processCount = runningPrograms.count
+        let processSubject = processCount == 1
+            ? "A process is"
+            : "\(processCount) processes are"
+        let processObject = processCount == 1 ? "it" : "them"
+        alertRequest = AlertRequest(
+            title: "Close Tab with Running Processes?",
+            message: "\(processSubject) still running: "
                 + Array(Set(runningPrograms)).sorted().joined(separator: ", ")
-                + ". Closing the tab will terminate these processes.",
+                + ". Closing this tab will terminate \(processObject).",
             confirmationTitle: "Close Tab",
             action: .closeTab(id)
         )
@@ -1035,23 +1062,23 @@ final class AppModel: ObservableObject {
             if index > 0 { return paneIDs[index - 1] }
             return nil
         }
-        let directoryTabs = terminalTabs.filter {
-            $0.directory.standardizedFileURL.path
-                == closingTab.directory.standardizedFileURL.path
+        let folderTabs = terminalTabs.filter {
+            $0.folderURL.standardizedFileURL.path
+                == closingTab.folderURL.standardizedFileURL.path
         }
-        let closingDirectoryTabIndex = directoryTabs.firstIndex {
+        let closingFolderTabIndex = folderTabs.firstIndex {
             $0.id == closingTab.id
         }
-        let replacementTabID = closingDirectoryTabIndex.flatMap { index -> UUID? in
-            if index + 1 < directoryTabs.count { return directoryTabs[index + 1].id }
-            if index > 0 { return directoryTabs[index - 1].id }
+        let replacementTabID = closingFolderTabIndex.flatMap { index -> UUID? in
+            if index + 1 < folderTabs.count { return folderTabs[index + 1].id }
+            if index > 0 { return folderTabs[index - 1].id }
             return nil
         }
-        let directoryPath = closingTab.directory.standardizedFileURL.path
+        let folderPath = closingTab.folderURL.standardizedFileURL.path
         if recordsForRestoration {
-            recentlyClosedTerminalDirectories.append(closingSession.directory)
-            if recentlyClosedTerminalDirectories.count > 20 {
-                recentlyClosedTerminalDirectories.removeFirst()
+            recentlyClosedTerminalFolderURLs.append(closingSession.folderURL)
+            if recentlyClosedTerminalFolderURLs.count > 20 {
+                recentlyClosedTerminalFolderURLs.removeFirst()
             }
         }
         closingSession.terminal.onClose = nil
@@ -1082,11 +1109,11 @@ final class AppModel: ObservableObject {
             }
         }
         if terminalTabs.contains(where: { $0.id == closingTab.id }) {
-            lastActiveTabIDByDirectory[directoryPath] = closingTab.id
+            lastActiveTabIDByFolderPath[folderPath] = closingTab.id
         } else if let replacementTabID {
-            lastActiveTabIDByDirectory[directoryPath] = replacementTabID
+            lastActiveTabIDByFolderPath[folderPath] = replacementTabID
         } else {
-            lastActiveTabIDByDirectory.removeValue(forKey: directoryPath)
+            lastActiveTabIDByFolderPath.removeValue(forKey: folderPath)
         }
 
         // AppKit may finish dismantling the old split containers after SwiftUI
@@ -1098,38 +1125,39 @@ final class AppModel: ObservableObject {
     }
 
     func restoreLastClosedTerminal() {
-        while let directory = recentlyClosedTerminalDirectories.popLast() {
-            guard Self.validDirectory(directory) != nil,
-                  rootDirectory(containing: directory) != nil else { continue }
-            openNewTerminal(for: directory)
+        while let closedFolderURL = recentlyClosedTerminalFolderURLs.popLast() {
+            guard Self.validFolderURL(closedFolderURL) != nil,
+                  folderURL(containing: closedFolderURL) != nil else { continue }
+            openNewTerminal(for: closedFolderURL)
             return
         }
     }
 
-    func promptRenameTerminal(_ id: UUID) {
-        guard let session = terminalSessions.first(where: {
-            $0.id == id
-        }) else { return }
-        renameRequest = TerminalRenameRequest(
-            terminalID: id,
-            initialTitle: session.displayTitle(
+    func promptRenameTab(_ id: UUID) {
+        guard let tab = terminalTabs.first(where: { $0.id == id }),
+              let session = terminalSessions.first(where: {
+                  $0.id == tab.focusedTerminalID
+              }) else { return }
+        renameRequest = TabRenameRequest(
+            tabID: id,
+            initialTitle: tab.customTitle ?? "",
+            automaticTitle: session.displayTitle(
                 terminalTitle: session.terminal.title,
                 foregroundProcessName: session.currentProcessName
             )
         )
     }
 
-    func saveTerminalRename(_ request: TerminalRenameRequest, title: String) {
-        guard let session = terminalSessions.first(where: {
-            $0.id == request.terminalID
+    func saveTabRename(_ request: TabRenameRequest, title: String) {
+        guard let tabIndex = terminalTabs.firstIndex(where: {
+            $0.id == request.tabID
         }) else {
             renameRequest = nil
             return
         }
         let value = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        session.customTitle = value.isEmpty ? nil : value
+        terminalTabs[tabIndex].customTitle = value.isEmpty ? nil : value
         renameRequest = nil
-        objectWillChange.send()
     }
 
     func dismissRenameRequest() {
@@ -1137,15 +1165,15 @@ final class AppModel: ObservableObject {
     }
 
     func dismissAlert() {
-        alertState = nil
+        alertRequest = nil
     }
 
-    func confirmAlert(_ alert: WorkspaceAlertState) {
-        guard alertState?.id == alert.id else { return }
-        alertState = nil
+    func confirmAlert(_ alert: AlertRequest) {
+        guard alertRequest?.id == alert.id else { return }
+        alertRequest = nil
         switch alert.action {
-        case let .removeRoot(url):
-            removeRootDirectory(url)
+        case let .removeFolder(url):
+            removeFolder(url)
         case let .closeTerminal(id):
             closeTerminal(id)
         case let .closeTab(id):
@@ -1296,11 +1324,11 @@ final class AppModel: ObservableObject {
     }
 
     private func latestAgentAttentionTerminalID(
-        in directory: URL
+        in folderURL: URL
     ) -> UUID? {
-        let path = directory.standardizedFileURL.path
+        let path = folderURL.standardizedFileURL.path
         let terminalIDs = terminalTabs
-            .filter { $0.directory.standardizedFileURL.path == path }
+            .filter { $0.folderURL.standardizedFileURL.path == path }
             .flatMap(\.terminalIDs)
         return latestAgentAttentionTerminalID(in: terminalIDs)
     }
@@ -1322,17 +1350,17 @@ final class AppModel: ObservableObject {
         agentAttentionClearedHandler?(terminalID)
     }
 
-    private func persistWorkspaceState() {
-        defaults.set(rootURLs.map(\.path), forKey: Keys.folderPaths)
-        if let activeDirectory {
-            defaults.set(activeDirectory.path, forKey: Keys.activeFolderPath)
+    private func persistFolderState() {
+        defaults.set(folderURLs.map(\.path), forKey: Keys.folderPaths)
+        if let activeFolderURL {
+            defaults.set(activeFolderURL.path, forKey: Keys.activeFolderPath)
         } else {
             defaults.removeObject(forKey: Keys.activeFolderPath)
         }
     }
 
-    private func presentRootAdditionFailures(
-        _ results: [WorkspaceRootAdditionResult]
+    private func presentFolderAdditionFailures(
+        _ results: [FolderAdditionResult]
     ) {
         let messages = results.compactMap { result -> String? in
             switch result {
@@ -1346,7 +1374,7 @@ final class AppModel: ObservableObject {
         }
         guard !messages.isEmpty else { return }
 
-        alertState = WorkspaceAlertState(
+        alertRequest = AlertRequest(
             title: "Some Folders Were Not Added",
             message: messages.joined(separator: "\n"),
             confirmationTitle: nil,
@@ -1354,7 +1382,7 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private static func validDirectory(_ url: URL?) -> URL? {
+    private static func validFolderURL(_ url: URL?) -> URL? {
         guard let url else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(
@@ -1364,102 +1392,120 @@ final class AppModel: ObservableObject {
         return url.resolvingSymlinksInPath().standardizedFileURL
     }
 
-    private static func isInside(_ url: URL, root: URL) -> Bool {
+    private static func isInside(_ url: URL, folder: URL) -> Bool {
         let path = url.standardizedFileURL.path
-        let rootPath = root.standardizedFileURL.path
-        let descendantPrefix = rootPath == "/" ? "/" : rootPath + "/"
-        return path == rootPath || path.hasPrefix(descendantPrefix)
+        let folderPath = folder.standardizedFileURL.path
+        let descendantPrefix = folderPath == "/" ? "/" : folderPath + "/"
+        return path == folderPath || path.hasPrefix(descendantPrefix)
     }
 
-    private static func restoredRootDirectories(
+    private static func restoredFolders(
         from defaults: UserDefaults
     ) -> [URL] {
-        guard let paths = defaults.stringArray(
-            forKey: Keys.folderPaths
-        ) else {
+        guard let paths = defaults.stringArray(forKey: Keys.folderPaths) else {
             return []
         }
-        var roots: [URL] = []
+        var folders: [URL] = []
         for path in paths {
-            guard let directory = validDirectory(URL(fileURLWithPath: path)),
-                  !roots.contains(where: {
-                      $0.standardizedFileURL.path == directory.path
+            guard let folderURL = validFolderURL(URL(fileURLWithPath: path)),
+                  !folders.contains(where: {
+                      $0.standardizedFileURL.path == folderURL.path
                   }) else {
                 continue
             }
-            roots.append(directory)
+            folders.append(folderURL)
         }
-        return roots
+        return folders
     }
 
-    private static func restoredActiveDirectory(
+    private static func restoredActiveFolderURL(
         from defaults: UserDefaults,
-        roots: [URL]
+        folders: [URL]
     ) -> URL? {
         guard let path = defaults.string(forKey: Keys.activeFolderPath),
-              let directory = validDirectory(URL(fileURLWithPath: path)),
-              roots.contains(where: {
-                  $0.standardizedFileURL.path == directory.path
+              let folderURL = validFolderURL(URL(fileURLWithPath: path)),
+              folders.contains(where: {
+                  $0.standardizedFileURL.path == folderURL.path
               }) else {
             return nil
         }
-        return directory
+        return folderURL
     }
 
     private enum Keys {
-        static let folderPaths = "workspace.folderPaths.v1"
-        static let activeFolderPath = "workspace.activeFolderPath.v1"
+        static let folderPaths = "folders.paths.v1"
+        static let activeFolderPath = "folders.activePath.v1"
     }
 }
 
 @MainActor
 final class TerminalSession: ObservableObject, Identifiable {
     let id = UUID()
-    let directory: URL
+    let folderURL: URL
     let terminal: TerminalViewState
     let defaultShellName: String
     var terminalView: TerminalView?
-    @Published var customTitle: String?
     @Published var isSearchPresented = false
     @Published var searchQuery = ""
     @Published private(set) var searchFocusRequest = 0
     private var pendingInput: String?
 
     init(
-        directory: URL,
-        preferences: TerminalPreferences? = nil,
+        folderURL: URL,
+        settings: AppSettings? = nil,
         defaultShellPath: String? = nil,
         surfaceContext: TerminalSurfaceContext = .window,
         initialInput: String? = nil
     ) {
-        let preferences = preferences ?? TerminalPreferences()
-        self.directory = directory.standardizedFileURL
+        let settings = settings ?? AppSettings()
+        self.folderURL = folderURL.standardizedFileURL
         let shellPath = defaultShellPath ?? Self.loginShellPath
         defaultShellName = Self.processName(
             from: shellPath
         ) ?? "shell"
 
         terminal = TerminalViewState(
-            configSource: preferences.ghosttyConfigSource
+            configSource: settings.ghosttyConfigSource
         )
         terminal.configuration = TerminalSurfaceOptions(
             backend: .exec,
-            workingDirectory: directory.path,
+            workingDirectory: folderURL.path,
             context: surfaceContext
         )
         pendingInput = initialInput
     }
 
-    var currentProcessName: String? {
-        let pid = terminalView?.foregroundPid.flatMap { value in
+    var foregroundProcessID: UInt64? {
+        terminalView?.foregroundPid.flatMap { value in
             value > 0 ? UInt64(value) : nil
         }
-        return Self.processName(for: pid)
+    }
+
+    var currentProcessName: String? {
+        Self.processName(for: foregroundProcessID)
     }
 
     var isRunningForegroundProgram: Bool {
-        guard let currentProcessName else { return false }
-        return currentProcessName != defaultShellName
+        Self.foregroundProcessIsRunning(
+            processName: currentProcessName,
+            processID: foregroundProcessID,
+            defaultShellName: defaultShellName
+        )
+    }
+
+    var runningForegroundProcessName: String? {
+        guard isRunningForegroundProgram else { return nil }
+        return currentProcessName ?? "Unknown process"
+    }
+
+    static func foregroundProcessIsRunning(
+        processName: String?,
+        processID: UInt64?,
+        defaultShellName: String
+    ) -> Bool {
+        guard processID != nil else { return false }
+        guard let processName else { return true }
+        return processName != defaultShellName
     }
 
     func presentSearch() {
@@ -1495,10 +1541,6 @@ final class TerminalSession: ObservableObject, Identifiable {
         terminalTitle: String,
         foregroundProcessName: String?
     ) -> String {
-        if let customTitle,
-           !customTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return customTitle
-        }
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty, !Self.isPathTitle(title) {
             return title

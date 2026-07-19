@@ -85,6 +85,8 @@ final class SpaceUITests: XCTestCase {
         ]
         XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
         XCTAssertFalse(tabContainer.exists)
+        XCTAssertFalse(app.buttons["new-terminal-tab-button"].exists)
+        XCTAssertTrue(app.buttons["add-folder-sidebar-button"].exists)
 
         app.typeKey("t", modifierFlags: .command)
 
@@ -112,7 +114,7 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testDoubleClickingSingleTerminalTitlePresentsRenameSheet() throws {
+    func testDoubleClickingTerminalTitlePresentsRenameTabSheet() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
@@ -122,7 +124,19 @@ final class SpaceUITests: XCTestCase {
         terminalTitle.doubleClick()
 
         XCTAssertTrue(
-            app.staticTexts["Rename Terminal"].waitForExistence(timeout: 3)
+            app.staticTexts["Rename Tab"].waitForExistence(timeout: 3)
+        )
+    }
+
+    @MainActor
+    func testAppendingWithoutASelectionShowsFeedback() throws {
+        let (app, _) = try launchIsolatedApp()
+        defer { app.terminate() }
+
+        app.typeKey("m", modifierFlags: [.command, .shift])
+
+        XCTAssertTrue(
+            app.staticTexts["No text selected."].waitForExistence(timeout: 3)
         )
     }
 
@@ -280,7 +294,7 @@ final class SpaceUITests: XCTestCase {
 
     @MainActor
     private func launchIsolatedApp(
-        folderNames: [String] = ["Workspace"]
+        folderNames: [String] = ["Folder"]
     ) throws -> (XCUIApplication, [URL]) {
         let container = FileManager.default.temporaryDirectory
             .appendingPathComponent("SpaceUITests-\(UUID().uuidString)")
@@ -304,7 +318,7 @@ final class SpaceUITests: XCTestCase {
         if app.state != .notRunning {
             app.terminate()
         }
-        app.launchEnvironment["SPACE_UI_TEST_ROOT_PATHS"] = folders
+        app.launchEnvironment["SPACE_UI_TEST_FOLDER_PATHS"] = folders
             .map(\.path)
             .joined(separator: "\n")
         app.launchEnvironment["SPACE_UI_TEST_DEFAULTS_SUITE"] =

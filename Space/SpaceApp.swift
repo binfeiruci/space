@@ -5,21 +5,21 @@ import UserNotifications
 @MainActor
 final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
     UNUserNotificationCenterDelegate {
-    weak var workspace: AppModel?
+    weak var model: AppModel?
     private var applicationShortcutMonitor: Any?
 
-    func installApplicationShortcutMonitor(for workspace: AppModel) {
-        self.workspace = workspace
+    func installApplicationShortcutMonitor(for model: AppModel) {
+        self.model = model
         UNUserNotificationCenter.current().delegate = self
-        workspace.agentAttentionHandler = {
-            [weak self] terminalID, directory, notification in
+        model.agentAttentionHandler = {
+            [weak self] terminalID, folderURL, notification in
             self?.deliverAgentAttentionNotification(
                 terminalID: terminalID,
-                directory: directory,
+                folderURL: folderURL,
                 notification: notification
             )
         }
-        workspace.agentAttentionClearedHandler = { terminalID in
+        model.agentAttentionClearedHandler = { terminalID in
             let center = UNUserNotificationCenter.current()
             let identifier = Self.agentAttentionIdentifier(
                 for: terminalID
@@ -43,17 +43,17 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             }
 
             if let index = TerminalTabSelectionShortcut.index(for: event),
-               let workspace = self?.workspace {
+               let model = self?.model {
                 let selected = index == 8
-                    ? workspace.selectLastTerminal()
-                    : workspace.selectTerminal(at: index)
+                    ? model.selectLastTab()
+                    : model.selectTab(at: index)
                 if selected { return nil }
             }
 
             // Keep a physical-key fallback for shifted brackets because their
             // characters vary with the active keyboard layout.
-            guard let offset = TerminalNavigationShortcut.offset(for: event),
-                  self?.workspace?.selectAdjacentTerminal(offset: offset) == true
+            guard let offset = AdjacentTabShortcut.offset(for: event),
+                  self?.model?.selectAdjacentTab(offset: offset) == true
             else { return event }
             return nil
         }
@@ -64,12 +64,12 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             NSEvent.removeMonitor(applicationShortcutMonitor)
         }
         applicationShortcutMonitor = nil
-        workspace?.agentAttentionHandler = nil
-        workspace?.agentAttentionClearedHandler = nil
+        model?.agentAttentionHandler = nil
+        model?.agentAttentionClearedHandler = nil
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        workspace?.clearVisibleAgentAttention()
+        model?.clearVisibleAgentAttention()
     }
 
     func userNotificationCenter(
@@ -82,13 +82,13 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             let terminalID = UUID(uuidString: value)
         else { return }
 
-        workspace?.selectTerminal(terminalID)
+        model?.selectTerminal(terminalID)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func deliverAgentAttentionNotification(
         terminalID: UUID,
-        directory: URL,
+        folderURL: URL,
         notification: AgentAttentionNotification
     ) {
         guard !NSApp.isActive else { return }
@@ -110,7 +110,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
                 isAuthorized = false
             }
             guard isAuthorized,
-                  workspace?.agentAttentionByTerminalID[terminalID]?.id
+                  model?.agentAttentionByTerminalID[terminalID]?.id
                     == notification.id else { return }
 
             let content = UNMutableNotificationContent()
@@ -122,7 +122,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             )
             content.title = title.isEmpty ? "Agent needs attention" : title
             content.body = body.isEmpty
-                ? directory.lastPathComponent
+                ? folderURL.lastPathComponent
                 : body
             content.sound = .default
             content.userInfo = ["terminalID": terminalID.uuidString]
@@ -147,13 +147,13 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard let workspace else {
+        guard let model else {
             return .terminateNow
         }
 
-        let runningPrograms = workspace.terminalSessions.compactMap { session in
-            session.isRunningForegroundProgram ? session.currentProcessName : nil
-        }
+        let runningPrograms = model.terminalSessions.compactMap(
+            \.runningForegroundProcessName
+        )
         let prompt = ApplicationTerminationPrompt(
             runningProgramNames: runningPrograms
         )
@@ -161,9 +161,9 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
 
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Commands Are Running"
+        alert.messageText = "Processes Are Still Running"
         alert.informativeText = prompt.informativeText
-        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Quit Space")
         alert.addButton(withTitle: "Cancel")
 
         return alert.runModal() == .alertFirstButtonReturn
@@ -184,14 +184,15 @@ struct ApplicationTerminationPrompt {
 
         let names = Array(Set(runningProgramNames)).sorted().joined(separator: ", ")
         let subject = runningProgramNames.count == 1
-            ? "1 terminal is"
-            : "\(runningProgramNames.count) terminals are"
-        return "\(subject) running commands: \(names)."
-            + "\nQuitting will terminate these programs."
+            ? "Running process in 1 terminal"
+            : "Running processes in \(runningProgramNames.count) terminals"
+        let object = runningProgramNames.count == 1 ? "it" : "them"
+        return "\(subject): \(names)."
+            + "\nQuitting Space will terminate \(object)."
     }
 }
 
-enum TerminalNavigationShortcut {
+enum AdjacentTabShortcut {
     private static let leftBracketKeyCode: UInt16 = 33
     private static let rightBracketKeyCode: UInt16 = 30
     private static let relevantModifiers: NSEvent.ModifierFlags = [
@@ -261,34 +262,34 @@ enum TerminalTabSelectionShortcut {
 struct SpaceApp: App {
     @NSApplicationDelegateAdaptor(SpaceAppDelegate.self)
     private var appDelegate
-    @StateObject private var workspace: AppModel
+    @StateObject private var model: AppModel
 
     init() {
         NSWindow.allowsAutomaticWindowTabbing = false
-        _workspace = StateObject(wrappedValue: Self.makeWorkspace())
+        _model = StateObject(wrappedValue: Self.makeAppModel())
     }
 
-    private static func makeWorkspace() -> AppModel {
+    private static func makeAppModel() -> AppModel {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        if let pathsValue = environment["SPACE_UI_TEST_ROOT_PATHS"] {
+        if let pathsValue = environment["SPACE_UI_TEST_FOLDER_PATHS"] {
             let paths = pathsValue.split(separator: "\n").map(String.init)
             if let firstPath = paths.first {
                 let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"]
                     ?? "SpaceUITests"
                 let defaults = UserDefaults(suiteName: suiteName) ?? .standard
                 defaults.removePersistentDomain(forName: suiteName)
-                let workspace = AppModel(
+                let model = AppModel(
                     defaults: defaults,
-                    initialRootURL: URL(fileURLWithPath: firstPath)
+                    initialFolderURL: URL(fileURLWithPath: firstPath)
                 )
                 for path in paths.dropFirst() {
-                    workspace.addRootDirectory(
+                    model.addFolder(
                         URL(fileURLWithPath: path),
                         activate: false
                     )
                 }
-                return workspace
+                return model
             }
         }
         #endif
@@ -297,15 +298,15 @@ struct SpaceApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ApplicationAppearanceView(
-                preferences: workspace.terminalPreferences
+            PreferredAppearanceView(
+                settings: model.settings
             ) {
                 ContentView()
-                    .environmentObject(workspace)
+                    .environmentObject(model)
                     .frame(minWidth: 820, minHeight: 540)
                     .onAppear {
                         appDelegate.installApplicationShortcutMonitor(
-                            for: workspace
+                            for: model
                         )
                     }
             }
@@ -321,190 +322,190 @@ struct SpaceApp: App {
             }
 
             CommandGroup(replacing: .newItem) {
-                Button("New Terminal") {
-                    if let directory = workspace.activeDirectory {
-                        workspace.openNewTerminal(for: directory)
+                Button("New Tab") {
+                    if let folderURL = model.activeFolderURL {
+                        model.openNewTerminal(for: folderURL)
                     }
                 }
                 .keyboardShortcut("t", modifiers: .command)
-                .disabled(workspace.activeDirectory == nil)
+                .disabled(model.activeFolderURL == nil)
 
                 Button("Add Folder…") {
-                    workspace.chooseRootDirectory()
+                    model.chooseFolder()
                 }
                 .keyboardShortcut("o", modifiers: .command)
 
                 Divider()
 
                 Button("Split Right") {
-                    workspace.splitActiveTerminal(direction: .right)
+                    model.splitActiveTerminal(direction: .right)
                 }
                 .keyboardShortcut("d", modifiers: .command)
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Split Left") {
-                    workspace.splitActiveTerminal(direction: .left)
+                    model.splitActiveTerminal(direction: .left)
                 }
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Split Down") {
-                    workspace.splitActiveTerminal(direction: .down)
+                    model.splitActiveTerminal(direction: .down)
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Split Up") {
-                    workspace.splitActiveTerminal(direction: .up)
+                    model.splitActiveTerminal(direction: .up)
                 }
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Divider()
 
                 Button("Close Terminal") {
-                    workspace.requestCloseActiveTerminal()
+                    model.requestCloseActiveTerminal()
                 }
                 .keyboardShortcut("w", modifiers: .command)
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Reopen Closed Terminal") {
-                    workspace.restoreLastClosedTerminal()
+                    model.restoreLastClosedTerminal()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(!workspace.canRestoreClosedTerminal)
+                .disabled(!model.canRestoreClosedTerminal)
             }
 
             CommandGroup(replacing: .saveItem) { }
 
             CommandGroup(after: .pasteboard) {
-                Button("Add Selection to Memo") {
-                    workspace.sendActiveSelectionToMemo()
+                Button("Append Selection to .memo") {
+                    model.sendActiveSelectionToMemo()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Divider()
 
                 Button("Find…") {
-                    workspace.activeTerminalSession?.presentSearch()
+                    model.activeTerminalSession?.presentSearch()
                 }
                 .keyboardShortcut("f", modifiers: .command)
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Find Next") {
-                    workspace.activeTerminalSession?.navigateSearch(forward: true)
+                    model.activeTerminalSession?.navigateSearch(forward: true)
                 }
                 .keyboardShortcut("g", modifiers: .command)
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
 
                 Button("Find Previous") {
-                    workspace.activeTerminalSession?.navigateSearch(forward: false)
+                    model.activeTerminalSession?.navigateSearch(forward: false)
                 }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
-                .disabled(workspace.activeTerminalSession == nil)
+                .disabled(model.activeTerminalSession == nil)
             }
 
             CommandGroup(replacing: .sidebar) {
-                Button(workspace.isSidebarVisible
-                    ? "Hide Folder List"
-                    : "Show Folder List") {
-                    workspace.toggleSidebar()
+                Button(model.isSidebarVisible
+                    ? "Hide Sidebar"
+                    : "Show Sidebar") {
+                    model.toggleSidebar()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-                .disabled(workspace.folders.isEmpty)
+                .disabled(model.folders.isEmpty)
 
                 Divider()
 
                 Button("Rename Tab…") {
-                    guard let terminalID = workspace.activeTerminalID else {
+                    guard let tabID = model.activeTerminalTab?.id else {
                         return
                     }
-                    workspace.promptRenameTerminal(terminalID)
+                    model.promptRenameTab(tabID)
                 }
-                .disabled(workspace.activeTerminalID == nil)
+                .disabled(model.activeTerminalTab == nil)
             }
 
             CommandGroup(before: .windowArrangement) {
                 Button("Previous Folder") {
-                    workspace.selectAdjacentFolder(offset: -1)
+                    model.selectAdjacentFolder(offset: -1)
                 }
                 .keyboardShortcut(
                     .leftArrow,
                     modifiers: [.command, .shift]
                 )
-                .disabled(workspace.folders.count < 2)
+                .disabled(model.folders.count < 2)
 
                 Button("Next Folder") {
-                    workspace.selectAdjacentFolder(offset: 1)
+                    model.selectAdjacentFolder(offset: 1)
                 }
                 .keyboardShortcut(
                     .rightArrow,
                     modifiers: [.command, .shift]
                 )
-                .disabled(workspace.folders.count < 2)
+                .disabled(model.folders.count < 2)
 
                 Divider()
 
                 Button("Previous Tab") {
-                    workspace.selectAdjacentTerminal(offset: -1)
+                    model.selectAdjacentTab(offset: -1)
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(workspace.activeDirectoryTabs.count < 2)
+                .disabled(model.activeFolderTabs.count < 2)
 
                 Button("Next Tab") {
-                    workspace.selectAdjacentTerminal(offset: 1)
+                    model.selectAdjacentTab(offset: 1)
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(workspace.activeDirectoryTabs.count < 2)
+                .disabled(model.activeFolderTabs.count < 2)
 
                 Divider()
 
                 Button("Select Split Left") {
-                    workspace.selectSplit(in: .left)
+                    model.selectSplit(in: .left)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canSelectSplit(in: .left))
+                .disabled(!model.canSelectSplit(in: .left))
 
                 Button("Select Split Right") {
-                    workspace.selectSplit(in: .right)
+                    model.selectSplit(in: .right)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canSelectSplit(in: .right))
+                .disabled(!model.canSelectSplit(in: .right))
 
                 Button("Select Split Above") {
-                    workspace.selectSplit(in: .up)
+                    model.selectSplit(in: .up)
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canSelectSplit(in: .up))
+                .disabled(!model.canSelectSplit(in: .up))
 
                 Button("Select Split Below") {
-                    workspace.selectSplit(in: .down)
+                    model.selectSplit(in: .down)
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-                .disabled(!workspace.canSelectSplit(in: .down))
+                .disabled(!model.canSelectSplit(in: .down))
             }
         }
 
         Settings {
-            TerminalSettingsView(preferences: workspace.terminalPreferences)
+            SettingsView(settings: model.settings)
         }
     }
 }
 
-private struct ApplicationAppearanceView<Content: View>: View {
-    @ObservedObject var preferences: TerminalPreferences
+private struct PreferredAppearanceView<Content: View>: View {
+    @ObservedObject var settings: AppSettings
     let content: Content
 
     init(
-        preferences: TerminalPreferences,
+        settings: AppSettings,
         @ViewBuilder content: () -> Content
     ) {
-        self.preferences = preferences
+        self.settings = settings
         self.content = content()
     }
 
     var body: some View {
         content.preferredColorScheme(
-            preferences.applicationAppearance.colorScheme
+            settings.appearance.colorScheme
         )
     }
 }

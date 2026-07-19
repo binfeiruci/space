@@ -3,8 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var workspace: AppModel
-    @State private var sidebarWidth = 290.0
+    @EnvironmentObject private var model: AppModel
     @State private var windowWidth: CGFloat = 1_220
 
     private var terminalTabStripMaximumWidth: CGFloat {
@@ -13,78 +12,74 @@ struct ContentView: View {
 
     private var folderImporterIsPresented: Binding<Bool> {
         Binding(
-            get: { workspace.isFolderImporterPresented },
+            get: { model.isFolderImporterPresented },
             set: { isPresented in
-                if !isPresented { workspace.dismissFolderImporter() }
+                if !isPresented { model.dismissFolderImporter() }
             }
         )
     }
 
-    private var alertState: Binding<WorkspaceAlertState?> {
+    private var alertRequest: Binding<AlertRequest?> {
         Binding(
-            get: { workspace.alertState },
+            get: { model.alertRequest },
             set: { state in
-                if state == nil { workspace.dismissAlert() }
+                if state == nil { model.dismissAlert() }
             }
         )
     }
 
-    private var renameRequest: Binding<TerminalRenameRequest?> {
+    private var renameRequest: Binding<TabRenameRequest?> {
         Binding(
-            get: { workspace.renameRequest },
+            get: { model.renameRequest },
             set: { request in
-                if request == nil { workspace.dismissRenameRequest() }
+                if request == nil { model.dismissRenameRequest() }
             }
         )
     }
 
     var body: some View {
         ZStack {
-            if workspace.folders.isEmpty {
-                WorkspaceEmptyView()
+            if model.folders.isEmpty {
+                EmptyFolderView()
             } else {
                 HSplitView {
-                    if workspace.isSidebarVisible {
-                        DirectorySidebar()
-                        .frame(
-                            minWidth: 230,
-                            idealWidth: sidebarWidth,
-                            maxWidth: 420
-                        )
-                        .background {
-                            GeometryReader { geometry in
-                                Color.clear.preference(
-                                    key: SidebarWidthPreferenceKey.self,
-                                    value: geometry.size.width
-                                )
-                            }
-                        }
+                    if model.isSidebarVisible {
+                        FolderSidebar()
+                            .frame(minWidth: 160)
                     }
 
-                    TerminalWorkspacePane()
-                    .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+                    TerminalArea()
+                        .frame(
+                            minWidth: 560,
+                            maxWidth: .infinity,
+                            maxHeight: .infinity
+                        )
+                        .layoutPriority(1)
                 }
             }
 
-            if let notice = workspace.memoSaveNotice {
-                MemoSaveToast(message: notice.message)
+            if let notice = model.memoSaveNotice {
+                MemoSaveToast(
+                    message: notice.message,
+                    systemImage: notice.systemImage
+                )
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .task(id: notice.id) {
                         try? await Task.sleep(for: .seconds(1.5))
                         guard !Task.isCancelled else { return }
-                        workspace.dismissMemoSaveNotice(notice.id)
+                        model.dismissMemoSaveNotice(notice.id)
                     }
             }
         }
-        .animation(.easeOut(duration: 0.16), value: workspace.memoSaveNotice)
+        .animation(.easeOut(duration: 0.16), value: model.memoSaveNotice)
         .background(Color(nsColor: .windowBackgroundColor))
         .navigationTitle("")
         .background(WindowConfigurator(
-            sidebarIsVisible: workspace.isSidebarVisible
+            sidebarIsVisible: model.isSidebarVisible
         ))
         .toolbar {
-            if !workspace.folders.isEmpty,
-               !workspace.activeDirectoryTabs.isEmpty {
+            if !model.folders.isEmpty,
+               !model.activeFolderTabs.isEmpty {
                 if #available(macOS 26.0, *) {
                     ToolbarItem(placement: .principal) {
                         TerminalTitleBarContent(
@@ -104,27 +99,21 @@ struct ContentView: View {
             }
 
             ToolbarItemGroup(placement: .navigation) {
-                if !workspace.folders.isEmpty {
+                if !model.folders.isEmpty {
                     Button {
-                        workspace.toggleSidebar()
+                        model.toggleSidebar()
                     } label: {
                         Image(systemName: "sidebar.left")
                     }
                     .keyboardShortcut("s", modifiers: [.command, .option])
-                    .help(workspace.isSidebarVisible
-                        ? "Collapse Folder List (⌥⌘S)"
-                        : "Expand Folder List (⌥⌘S)")
-                    .accessibilityLabel(workspace.isSidebarVisible
-                        ? "Collapse Folder List"
-                        : "Expand Folder List")
+                    .help(model.isSidebarVisible
+                        ? "Hide Sidebar (⌥⌘S)"
+                        : "Show Sidebar (⌥⌘S)")
+                    .accessibilityLabel(model.isSidebarVisible
+                        ? "Hide Sidebar"
+                        : "Show Sidebar")
                 }
             }
-        }
-        .onPreferenceChange(SidebarWidthPreferenceKey.self) { width in
-            guard workspace.isSidebarVisible,
-                  width >= 230,
-                  width <= 420 else { return }
-            sidebarWidth = width
         }
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
@@ -137,34 +126,34 @@ struct ContentView: View {
             allowedContentTypes: [.folder],
             allowsMultipleSelection: true
         ) { result in
-            workspace.dismissFolderImporter()
+            model.dismissFolderImporter()
             switch result {
             case let .success(urls):
-                workspace.addRootDirectories(urls)
+                model.addFolders(urls)
             case let .failure(error):
                 guard (error as NSError).code != NSUserCancelledError else {
                     return
                 }
-                workspace.presentFolderImportError(error)
+                model.presentFolderImportError(error)
             }
         }
-        .alert(item: alertState) { state in
-            workspaceAlert(state)
+        .alert(item: alertRequest) { state in
+            appAlert(state)
         }
         .sheet(item: renameRequest) { request in
-            TerminalRenameSheet(request: request)
-                .environmentObject(workspace)
+            TabRenameSheet(request: request)
+                .environmentObject(model)
         }
     }
 
-    private func workspaceAlert(_ state: WorkspaceAlertState) -> Alert {
+    private func appAlert(_ state: AlertRequest) -> Alert {
         guard let confirmationTitle = state.confirmationTitle,
               state.action != nil else {
             return Alert(
                 title: Text(state.title),
                 message: Text(state.message),
                 dismissButton: .default(Text("OK")) {
-                    workspace.dismissAlert()
+                    model.dismissAlert()
                 }
             )
         }
@@ -172,10 +161,10 @@ struct ContentView: View {
             title: Text(state.title),
             message: Text(state.message),
             primaryButton: .destructive(Text(confirmationTitle)) {
-                workspace.confirmAlert(state)
+                model.confirmAlert(state)
             },
             secondaryButton: .cancel {
-                workspace.dismissAlert()
+                model.dismissAlert()
             }
         )
     }
@@ -183,9 +172,10 @@ struct ContentView: View {
 
 private struct MemoSaveToast: View {
     let message: String
+    let systemImage: String
 
     var body: some View {
-        Label(message, systemImage: "checkmark")
+        Label(message, systemImage: systemImage)
             .font(.callout.weight(.medium))
             .padding(.horizontal, 12)
             .frame(height: 32)
@@ -201,35 +191,39 @@ private struct MemoSaveToast: View {
     }
 }
 
-private struct TerminalRenameSheet: View {
-    @EnvironmentObject private var workspace: AppModel
+private struct TabRenameSheet: View {
+    @EnvironmentObject private var model: AppModel
     @FocusState private var isNameFocused: Bool
-    let request: TerminalRenameRequest
+    let request: TabRenameRequest
     @State private var title: String
 
-    init(request: TerminalRenameRequest) {
+    init(request: TabRenameRequest) {
         self.request = request
         _title = State(initialValue: request.initialTitle)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Terminal")
+            Text("Rename Tab")
                 .font(.headline)
 
-            TextField("Terminal Name", text: $title)
+            TextField(
+                "Tab Name",
+                text: $title,
+                prompt: Text("Automatic: \(request.automaticTitle)")
+            )
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFocused)
                 .onSubmit(save)
 
-            Text("Leave blank to follow the foreground process title.")
+            Text("Leave blank to use the automatic title.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) {
-                    workspace.dismissRenameRequest()
+                    model.dismissRenameRequest()
                 }
                 .keyboardShortcut(.cancelAction)
 
@@ -245,32 +239,32 @@ private struct TerminalRenameSheet: View {
     }
 
     private func save() {
-        workspace.saveTerminalRename(request, title: title)
+        model.saveTabRename(request, title: title)
     }
 }
 
-private struct DirectorySidebar: View {
-    @EnvironmentObject private var workspace: AppModel
+private struct FolderSidebar: View {
+    @EnvironmentObject private var model: AppModel
 
     private var selection: Binding<String?> {
         Binding(
             get: {
-                workspace.activeDirectory?.standardizedFileURL.path
+                model.activeFolderURL?.standardizedFileURL.path
             },
             set: { path in
                 guard let path,
-                      let folder = workspace.folders.first(where: {
+                      let folder = model.folders.first(where: {
                           $0.id == path
                       }) else { return }
-                workspace.activateTerminal(for: folder.url)
+                model.activateFolder(folder.url)
             }
         )
     }
 
-    private var folders: Binding<[WorkspaceFolder]> {
+    private var folders: Binding<[Folder]> {
         Binding(
-            get: { workspace.folders },
-            set: workspace.setFolderOrder
+            get: { model.folders },
+            set: model.setFolderOrder
         )
     }
 
@@ -281,6 +275,19 @@ private struct DirectorySidebar: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+
+                Button {
+                    model.chooseFolder()
+                } label: {
+                    Image(systemName: "plus")
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Add Folder…")
+                .accessibilityLabel("Add Folder")
+                .accessibilityIdentifier("add-folder-sidebar-button")
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
@@ -293,7 +300,7 @@ private struct DirectorySidebar: View {
                     editActions: .move,
                     selection: selection
                 ) { folder in
-                    DirectoryRow(
+                    FolderRow(
                         folder: folder.wrappedValue,
                         parentPath: disambiguatingParentPath(
                             for: folder.wrappedValue
@@ -304,7 +311,7 @@ private struct DirectorySidebar: View {
                 }
                 .listStyle(.sidebar)
                 .scrollContentBackground(.hidden)
-                .onChange(of: workspace.activeDirectory) { _, url in
+                .onChange(of: model.activeFolderURL) { _, url in
                     guard let url else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
                         proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
@@ -316,10 +323,10 @@ private struct DirectorySidebar: View {
     }
 
     private func disambiguatingParentPath(
-        for folder: WorkspaceFolder
+        for folder: Folder
     ) -> String? {
         let name = folder.url.lastPathComponent
-        guard workspace.folders.filter({
+        guard model.folders.filter({
             $0.url.lastPathComponent == name
         }).count > 1 else { return nil }
 
@@ -333,9 +340,9 @@ private struct DirectorySidebar: View {
     }
 }
 
-private struct DirectoryRow: View {
-    @EnvironmentObject private var workspace: AppModel
-    let folder: WorkspaceFolder
+private struct FolderRow: View {
+    @EnvironmentObject private var model: AppModel
+    let folder: Folder
     let parentPath: String?
 
     private var folderPath: String {
@@ -343,17 +350,17 @@ private struct DirectoryRow: View {
     }
 
     private var isActive: Bool {
-        workspace.activeDirectory?.standardizedFileURL
+        model.activeFolderURL?.standardizedFileURL
             == folder.url.standardizedFileURL
     }
 
     private var needsAgentAttention: Bool {
-        workspace.folderNeedsAgentAttention(folder.url)
+        model.folderNeedsAgentAttention(folder.url)
     }
 
     private var terminalActivityFrame: String? {
         guard !isActive, !needsAgentAttention else { return nil }
-        return workspace.folderRefreshingTitleFrame(folder.url)
+        return model.folderRefreshingTitleFrame(folder.url)
     }
 
     var body: some View {
@@ -422,14 +429,14 @@ private struct DirectoryRow: View {
             Divider()
 
             Button("Remove Folder", role: .destructive) {
-                workspace.requestRemoveRootDirectory(folder.url)
+                model.requestRemoveFolder(folder.url)
             }
         }
     }
 }
 
-private struct WorkspaceEmptyView: View {
-    @EnvironmentObject private var workspace: AppModel
+private struct EmptyFolderView: View {
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         VStack(spacing: 14) {
@@ -441,21 +448,13 @@ private struct WorkspaceEmptyView: View {
                 .font(.title2.weight(.semibold))
 
             Button("Add Folder…") {
-                workspace.chooseRootDirectory()
+                model.chooseFolder()
             }
             .controlSize(.large)
         }
         .multilineTextAlignment(.center)
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct SidebarWidthPreferenceKey: PreferenceKey {
-    static var defaultValue = 290.0
-
-    static func reduce(value: inout Double, nextValue: () -> Double) {
-        value = nextValue()
     }
 }
 
