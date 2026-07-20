@@ -1440,6 +1440,21 @@ final class AppModel: ObservableObject {
 
 @MainActor
 final class TerminalSession: ObservableObject, Identifiable {
+    struct ProcessSnapshot {
+        let processID: pid_t
+        let parentProcessID: pid_t
+        let processGroupID: pid_t
+        let ttyDevice: UInt64
+        let name: String
+    }
+
+    private struct ProcessIdentitySnapshot {
+        let processID: pid_t
+        let parentProcessID: pid_t
+        let processGroupID: pid_t
+        let ttyDevice: UInt64
+    }
+
     let id = UUID()
     let folderURL: URL
     let terminal: TerminalViewState
@@ -1449,6 +1464,9 @@ final class TerminalSession: ObservableObject, Identifiable {
     @Published var searchQuery = ""
     @Published private(set) var searchFocusRequest = 0
     private var pendingInput: String?
+    private static var cachedProcessSnapshots:
+        (capturedAt: TimeInterval, snapshots: [ProcessIdentitySnapshot])?
+    private static let processSnapshotCacheLifetime: TimeInterval = 0.2
 
     init(
         folderURL: URL,
@@ -1475,37 +1493,37 @@ final class TerminalSession: ObservableObject, Identifiable {
         pendingInput = initialInput
     }
 
-    var foregroundProcessID: UInt64? {
-        terminalView?.foregroundPid.flatMap { value in
-            value > 0 ? UInt64(value) : nil
-        }
-    }
+    private var currentForegroundProcess: ProcessSnapshot? {
+        guard let terminalView,
+              let processGroupID = terminalView.foregroundPid,
+              processGroupID > 0,
+              let ttyName = terminalView.ttyName,
+              let ttyDevice = Self.ttyDevice(for: ttyName)
+        else { return nil }
 
-    var currentProcessName: String? {
-        Self.processName(for: foregroundProcessID)
-    }
-
-    var isRunningForegroundProgram: Bool {
-        Self.foregroundProcessIsRunning(
-            processName: currentProcessName,
-            processID: foregroundProcessID,
-            defaultShellName: defaultShellName
+        return Self.resolveForegroundProcess(
+            processGroupID: processGroupID,
+            ttyDevice: ttyDevice,
+            processes: Self.processSnapshots(
+                processGroupID: processGroupID,
+                ttyDevice: ttyDevice
+            )
         )
     }
 
-    var runningForegroundProcessName: String? {
-        guard isRunningForegroundProgram else { return nil }
-        return currentProcessName ?? "Unknown process"
+    var currentProcessName: String? {
+        currentForegroundProcess?.name
     }
 
-    static func foregroundProcessIsRunning(
-        processName: String?,
-        processID: UInt64?,
-        defaultShellName: String
-    ) -> Bool {
-        guard processID != nil else { return false }
-        guard let processName else { return true }
-        return processName != defaultShellName
+    var isRunningForegroundProgram: Bool {
+        runningForegroundProcessName != nil
+    }
+
+    var runningForegroundProcessName: String? {
+        guard let process = currentForegroundProcess,
+              process.name != defaultShellName
+        else { return nil }
+        return process.name
     }
 
     func presentSearch() {
@@ -1554,6 +1572,133 @@ final class TerminalSession: ObservableObject, Identifiable {
             || title.hasPrefix("~/")
             || title.hasPrefix("/")
             || title.hasPrefix("file://")
+    }
+
+    static func resolveForegroundProcess(
+        processGroupID: pid_t,
+        ttyDevice: UInt64,
+        processes: [ProcessSnapshot]
+    ) -> ProcessSnapshot? {
+        guard processGroupID > 0 else { return nil }
+        let candidates = processes.filter {
+            $0.processGroupID == processGroupID
+                && $0.ttyDevice == ttyDevice
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        if let leader = candidates.first(where: {
+            $0.processID == processGroupID
+        }), leader.name != "login" {
+            return leader
+        }
+
+        let processByID = Dictionary(
+            uniqueKeysWithValues: processes.map { ($0.processID, $0) }
+        )
+        let usableCandidates = candidates.filter {
+            $0.name != "login"
+        }
+        guard let selected = usableCandidates.max(by: { lhs, rhs in
+            let lhsDepth = processDepth(lhs, processByID: processByID)
+            let rhsDepth = processDepth(rhs, processByID: processByID)
+            if lhsDepth == rhsDepth {
+                return lhs.processID < rhs.processID
+            }
+            return lhsDepth < rhsDepth
+        }) else { return nil }
+
+        return selected
+    }
+
+    private static func processDepth(
+        _ process: ProcessSnapshot,
+        processByID: [pid_t: ProcessSnapshot]
+    ) -> Int {
+        var depth = 0
+        var parentProcessID = process.parentProcessID
+        var visited = Set([process.processID])
+        while parentProcessID > 0,
+              !visited.contains(parentProcessID),
+              let parent = processByID[parentProcessID] {
+            visited.insert(parentProcessID)
+            depth += 1
+            parentProcessID = parent.parentProcessID
+        }
+        return depth
+    }
+
+    private static func ttyDevice(for ttyName: String) -> UInt64? {
+        var fileStatus = stat()
+        guard Darwin.lstat(ttyName, &fileStatus) == 0 else { return nil }
+        return UInt64(fileStatus.st_rdev)
+    }
+
+    private static func processSnapshots(
+        processGroupID: pid_t,
+        ttyDevice: UInt64
+    ) -> [ProcessSnapshot] {
+        processIdentitySnapshots().compactMap { process in
+            guard process.processGroupID == processGroupID,
+                  process.ttyDevice == ttyDevice,
+                  let name = processName(for: UInt64(process.processID))
+            else { return nil }
+            return ProcessSnapshot(
+                processID: process.processID,
+                parentProcessID: process.parentProcessID,
+                processGroupID: process.processGroupID,
+                ttyDevice: process.ttyDevice,
+                name: name
+            )
+        }
+    }
+
+    private static func processIdentitySnapshots() -> [ProcessIdentitySnapshot] {
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cache = cachedProcessSnapshots,
+           now - cache.capturedAt < processSnapshotCacheLifetime {
+            return cache.snapshots
+        }
+
+        var query = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var byteCount = 0
+        guard sysctl(&query, u_int(query.count), nil, &byteCount, nil, 0) == 0,
+              byteCount >= MemoryLayout<kinfo_proc>.stride
+        else { return [] }
+
+        var entries = [kinfo_proc](
+            repeating: kinfo_proc(),
+            count: byteCount / MemoryLayout<kinfo_proc>.stride
+        )
+        let result = entries.withUnsafeMutableBytes { buffer in
+            sysctl(
+                &query,
+                u_int(query.count),
+                buffer.baseAddress,
+                &byteCount,
+                nil,
+                0
+            )
+        }
+        guard result == 0 else { return [] }
+
+        let entryCount = min(
+            entries.count,
+            byteCount / MemoryLayout<kinfo_proc>.stride
+        )
+        let snapshots: [ProcessIdentitySnapshot] = entries.prefix(entryCount).compactMap {
+            entry -> ProcessIdentitySnapshot? in
+            let processID = entry.kp_proc.p_pid
+            let ttyDevice = entry.kp_eproc.e_tdev
+            guard processID > 0, ttyDevice >= 0 else { return nil }
+            return ProcessIdentitySnapshot(
+                processID: processID,
+                parentProcessID: entry.kp_eproc.e_ppid,
+                processGroupID: entry.kp_eproc.e_pgid,
+                ttyDevice: UInt64(ttyDevice)
+            )
+        }
+        cachedProcessSnapshots = (now, snapshots)
+        return snapshots
     }
 
     static func processName(for pidValue: UInt64?) -> String? {

@@ -659,27 +659,110 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func foregroundPIDWithoutAResolvedNameIsTreatedAsRunning() {
-        #expect(!TerminalSession.foregroundProcessIsRunning(
-            processName: nil,
-            processID: nil,
-            defaultShellName: "zsh"
+    func foregroundProcessResolverSkipsLoginAndSelectsItsShell() throws {
+        let processes = [
+            TerminalSession.ProcessSnapshot(
+                processID: 100,
+                parentProcessID: 1,
+                processGroupID: 100,
+                ttyDevice: 7,
+                name: "login"
+            ),
+            TerminalSession.ProcessSnapshot(
+                processID: 101,
+                parentProcessID: 100,
+                processGroupID: 100,
+                ttyDevice: 7,
+                name: "zsh"
+            ),
+        ]
+
+        let process = try #require(TerminalSession.resolveForegroundProcess(
+            processGroupID: 100,
+            ttyDevice: 7,
+            processes: processes
         ))
-        #expect(!TerminalSession.foregroundProcessIsRunning(
-            processName: "zsh",
-            processID: 42,
-            defaultShellName: "zsh"
+
+        #expect(process.processID == 101)
+        #expect(process.name == "zsh")
+    }
+
+    @Test @MainActor
+    func foregroundProcessResolverUsesNonLauncherGroupLeader() throws {
+        let processes = [
+            TerminalSession.ProcessSnapshot(
+                processID: 200,
+                parentProcessID: 101,
+                processGroupID: 200,
+                ttyDevice: 7,
+                name: "vim"
+            ),
+            TerminalSession.ProcessSnapshot(
+                processID: 201,
+                parentProcessID: 200,
+                processGroupID: 200,
+                ttyDevice: 7,
+                name: "helper"
+            ),
+        ]
+
+        let process = try #require(TerminalSession.resolveForegroundProcess(
+            processGroupID: 200,
+            ttyDevice: 7,
+            processes: processes
         ))
-        #expect(TerminalSession.foregroundProcessIsRunning(
-            processName: "vim",
-            processID: 42,
-            defaultShellName: "zsh"
+
+        #expect(process.processID == 200)
+        #expect(process.name == "vim")
+    }
+
+    @Test @MainActor
+    func foregroundProcessResolverRejectsPIDFromAnotherTTY() {
+        let processes = [
+            TerminalSession.ProcessSnapshot(
+                processID: 300,
+                parentProcessID: 1,
+                processGroupID: 300,
+                ttyDevice: 8,
+                name: "login"
+            ),
+        ]
+
+        let process = TerminalSession.resolveForegroundProcess(
+            processGroupID: 300,
+            ttyDevice: 7,
+            processes: processes
+        )
+        #expect(process?.processID == nil)
+    }
+
+    @Test @MainActor
+    func foregroundProcessResolverUsesDeepestTTYProcessWithoutALeader() throws {
+        let processes = [
+            TerminalSession.ProcessSnapshot(
+                processID: 401,
+                parentProcessID: 400,
+                processGroupID: 400,
+                ttyDevice: 7,
+                name: "zsh"
+            ),
+            TerminalSession.ProcessSnapshot(
+                processID: 402,
+                parentProcessID: 401,
+                processGroupID: 400,
+                ttyDevice: 7,
+                name: "top"
+            ),
+        ]
+
+        let process = try #require(TerminalSession.resolveForegroundProcess(
+            processGroupID: 400,
+            ttyDevice: 7,
+            processes: processes
         ))
-        #expect(TerminalSession.foregroundProcessIsRunning(
-            processName: nil,
-            processID: 42,
-            defaultShellName: "zsh"
-        ))
+
+        #expect(process.processID == 402)
+        #expect(process.name == "top")
     }
 
     @Test @MainActor
