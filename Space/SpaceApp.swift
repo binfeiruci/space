@@ -122,7 +122,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             )
             content.title = title.isEmpty ? "Agent needs attention" : title
             content.body = body.isEmpty
-                ? folderURL.lastPathComponent
+                ? Folder(url: folderURL).displayName
                 : body
             content.sound = .default
             content.userInfo = ["terminalID": terminalID.uuidString]

@@ -261,73 +261,81 @@ private struct FolderSidebar: View {
         )
     }
 
-    private var folders: Binding<[Folder]> {
-        Binding(
-            get: { model.folders },
-            set: model.setFolderOrder
-        )
+    private var foldersWithTabs: Binding<[Folder]> {
+        groupedFolders(hasTabs: true)
+    }
+
+    private var foldersWithoutTabs: Binding<[Folder]> {
+        groupedFolders(hasTabs: false)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Folders")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-
-                Button {
-                    model.chooseFolder()
-                } label: {
-                    Image(systemName: "plus")
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Add Folder…")
-                .accessibilityLabel("Add Folder")
-                .accessibilityIdentifier("add-folder-sidebar-button")
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-
-            Divider()
-
-            ScrollViewReader { proxy in
-                List(
-                    folders,
-                    editActions: .move,
-                    selection: selection
-                ) { folder in
-                    FolderRow(
-                        folder: folder.wrappedValue,
-                        parentPath: disambiguatingParentPath(
-                            for: folder.wrappedValue
-                        )
-                    )
-                    .tag(folder.wrappedValue.id)
-                    .id(folder.wrappedValue.id)
-                }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
-                .onChange(of: model.activeFolderURL) { _, url in
-                    guard let url else { return }
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
+        ScrollViewReader { proxy in
+            List(selection: selection) {
+                if !foldersWithTabs.wrappedValue.isEmpty {
+                    Section {
+                        folderRows(foldersWithTabs)
                     }
+                }
+
+                if !foldersWithoutTabs.wrappedValue.isEmpty {
+                    Section("No Tabs") {
+                        folderRows(foldersWithoutTabs)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .onChange(of: model.activeFolderURL) { _, url in
+                guard let url else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
                 }
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    private func groupedFolders(
+        hasTabs: Bool
+    ) -> Binding<[Folder]> {
+        Binding(
+            get: {
+                hasTabs ? model.foldersWithTabs : model.foldersWithoutTabs
+            },
+            set: { reorderedFolders in
+                var reordered = reorderedFolders.makeIterator()
+                let allFolders = model.folders.map { folder in
+                    guard model.folderHasTabs(folder) == hasTabs
+                    else { return folder }
+                    return reordered.next() ?? folder
+                }
+                model.setFolderOrder(allFolders)
+            }
+        )
+    }
+
+    private func folderRows(
+        _ folders: Binding<[Folder]>
+    ) -> some View {
+        ForEach(folders, editActions: .move) { folder in
+            FolderRow(
+                folder: folder.wrappedValue,
+                parentPath: disambiguatingParentPath(
+                    for: folder.wrappedValue
+                )
+            )
+            .tag(folder.wrappedValue.id)
+            .id(folder.wrappedValue.id)
+        }
+    }
+
     private func disambiguatingParentPath(
         for folder: Folder
     ) -> String? {
-        let name = folder.url.lastPathComponent
+        let name = folder.displayName
         guard model.folders.filter({
-            $0.url.lastPathComponent == name
+            $0.displayName == name
         }).count > 1 else { return nil }
 
         let parent = folder.url.deletingLastPathComponent().path
@@ -380,7 +388,7 @@ private struct FolderRow: View {
                             .frame(width: 10)
                     }
 
-                    Text(folder.url.lastPathComponent)
+                    Text(folder.displayName)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -414,7 +422,7 @@ private struct FolderRow: View {
         .contentShape(Rectangle())
         .help(folder.url.path)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Switch to folder \(folder.url.lastPathComponent)")
+        .accessibilityLabel("Switch to folder \(folder.displayName)")
         .accessibilityValue(
             terminalActivityFrame == nil ? "" : "Terminal content is updating"
         )

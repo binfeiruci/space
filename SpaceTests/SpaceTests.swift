@@ -44,6 +44,17 @@ struct SpaceTests {
     }
 
     @Test
+    func homeFolderUsesTildeAsItsDisplayName() {
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+
+        #expect(Folder(url: homeURL).displayName == "~")
+        #expect(
+            Folder(url: homeURL.appendingPathComponent("Projects")).displayName
+                == "Projects"
+        )
+    }
+
+    @Test
     func terminalInputMethodRectCorrectsLibghosttyCellOffset() {
         let rect = LibghosttyInputMethodWorkaround.correctedAnchorRect(
             NSRect(x: 120, y: 260, width: 4, height: 20)
@@ -491,6 +502,50 @@ struct SpaceTests {
             directories[2], directories[0], directories[1],
         ])
         #expect(restored.activeFolderURL == directories[2])
+    }
+
+    @Test @MainActor
+    func folderGroupsTrackWhetherFoldersHaveTabs() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        let directories = ["First", "Second", "Third"].map {
+            container.appendingPathComponent($0, isDirectory: true)
+        }
+        for directory in directories {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: container) }
+        let first = directories[0]
+        let second = directories[1]
+        let third = directories[2]
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: container),
+            initialFolderURL: first
+        )
+        let firstTerminalID = try #require(model.activeTerminalID)
+
+        #expect(model.addFolder(second, activate: false) == .added(second))
+        #expect(model.addFolder(third, activate: false) == .added(third))
+        model.activateFolder(third)
+
+        #expect(model.foldersWithTabs.map(\.url) == [first, third])
+        #expect(model.foldersWithoutTabs.map(\.url) == [second])
+        #expect(model.foldersInSidebarOrder.map(\.url) == [
+            first, third, second,
+        ])
+
+        model.selectTerminal(firstTerminalID)
+        #expect(model.selectAdjacentFolder(offset: 1))
+        #expect(model.activeFolderURL == third)
+
+        model.closeTerminal(firstTerminalID)
+
+        #expect(model.folderURLs == [first, second, third])
+        #expect(model.foldersWithTabs.map(\.url) == [third])
+        #expect(model.foldersWithoutTabs.map(\.url) == [first, second])
     }
 
     @Test @MainActor

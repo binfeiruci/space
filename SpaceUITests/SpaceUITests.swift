@@ -86,7 +86,6 @@ final class SpaceUITests: XCTestCase {
         XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
         XCTAssertFalse(tabContainer.exists)
         XCTAssertFalse(app.buttons["new-terminal-tab-button"].exists)
-        XCTAssertTrue(app.buttons["add-folder-sidebar-button"].exists)
 
         app.typeKey("t", modifierFlags: .command)
 
@@ -192,34 +191,43 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testFoldersCanBeReorderedByDragging() throws {
+    func testNoTabFoldersCanBeReorderedByDragging() throws {
         let (app, folders) = try launchIsolatedApp(
             folderNames: ["First", "Second", "Third"]
         )
         defer { app.terminate() }
 
-        let first = app.descendants(matching: .any)[
-            "folder-row:\(folders[0].path)"
+        let secondIdentifier = "folder-row:\(folders[1].path)"
+        let thirdIdentifier = "folder-row:\(folders[2].path)"
+        let second = app.descendants(matching: .any)[
+            secondIdentifier
         ]
         let third = app.descendants(matching: .any)[
-            "folder-row:\(folders[2].path)"
+            thirdIdentifier
         ]
-        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertTrue(second.waitForExistence(timeout: 3))
         XCTAssertTrue(third.exists)
 
         let rows = app.outlines.firstMatch.cells
-        XCTAssertEqual(rows.count, 3)
-        let firstRow = rows.element(boundBy: 0)
-        let thirdRow = rows.element(boundBy: 2)
+        let secondRow = rows.containing(
+            .any,
+            identifier: secondIdentifier
+        ).firstMatch
+        let thirdRow = rows.containing(
+            .any,
+            identifier: thirdIdentifier
+        ).firstMatch
+        XCTAssertTrue(secondRow.exists)
+        XCTAssertTrue(thirdRow.exists)
         let source = thirdRow.coordinate(
             withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
         )
-        let target = firstRow.coordinate(
+        let target = secondRow.coordinate(
             withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)
         )
         source.press(forDuration: 0.5, thenDragTo: target)
 
-        let moved = NSPredicate { _, _ in third.frame.minY < first.frame.minY }
+        let moved = NSPredicate { _, _ in third.frame.minY < second.frame.minY }
         expectation(for: moved, evaluatedWith: nil)
         waitForExpectations(timeout: 3)
     }

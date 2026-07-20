@@ -17,6 +17,14 @@ struct Folder: Identifiable, Equatable {
     var id: String {
         url.standardizedFileURL.path
     }
+
+    var displayName: String {
+        let folderURL = url.resolvingSymlinksInPath().standardizedFileURL
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        return folderURL == homeURL ? "~" : url.lastPathComponent
+    }
 }
 
 struct AlertRequest: Identifiable, Equatable {
@@ -497,6 +505,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var foldersWithTabs: [Folder] {
+        folders.filter(folderHasTabs)
+    }
+
+    var foldersWithoutTabs: [Folder] {
+        folders.filter { !folderHasTabs($0) }
+    }
+
+    var foldersInSidebarOrder: [Folder] {
+        foldersWithTabs + foldersWithoutTabs
+    }
+
+    func folderHasTabs(_ folder: Folder) -> Bool {
+        let folderPath = folder.url.standardizedFileURL.path
+        return terminalTabs.contains {
+            $0.folderURL.standardizedFileURL.path == folderPath
+        }
+    }
+
     var activeTerminalTab: TerminalTabState? {
         guard let activeTerminalID else { return nil }
         return terminalTabs.first { $0.root.contains(activeTerminalID) }
@@ -648,7 +675,7 @@ final class AppModel: ObservableObject {
             ? "1 terminal"
             : "\(sessionCount) terminals"
         alertRequest = AlertRequest(
-            title: "Remove Folder “\(folder.lastPathComponent)”?",
+            title: "Remove Folder “\(Folder(url: folder).displayName)”?",
             message: "This will close \(terminalCount) for this folder and terminate any running processes.",
             confirmationTitle: "Remove and Close Terminals",
             action: .removeFolder(folder)
@@ -940,14 +967,16 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectAdjacentFolder(offset: Int) -> Bool {
-        guard folders.count > 1,
+        let orderedFolders = foldersInSidebarOrder
+        guard orderedFolders.count > 1,
               let activeFolderURL,
               let activeFolder = folderURL(containing: activeFolderURL),
-              let index = folders.firstIndex(where: {
+              let index = orderedFolders.firstIndex(where: {
                   $0.url.standardizedFileURL.path == activeFolder.path
               }) else { return false }
-        let next = (index + offset + folders.count) % folders.count
-        activateFolder(folders[next].url)
+        let next = (index + offset + orderedFolders.count)
+            % orderedFolders.count
+        activateFolder(orderedFolders[next].url)
         return true
     }
 
@@ -1369,7 +1398,7 @@ final class AppModel: ObservableObject {
             case let .invalid(url):
                 "“\(url.path)” is not a valid folder."
             case let .duplicate(url):
-                "Folder “\(url.lastPathComponent)” has already been added."
+                "Folder “\(Folder(url: url).displayName)” has already been added."
             }
         }
         guard !messages.isEmpty else { return }
