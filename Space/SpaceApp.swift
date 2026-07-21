@@ -329,9 +329,13 @@ struct SpaceApp: App {
 
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
-                    model.openNewTerminal()
+                    model.openNewTerminalInActiveContext()
                 }
                 .keyboardShortcut("t", modifiers: .command)
+
+                Button("New Standalone Tab") {
+                    model.openNewStandaloneTerminal()
+                }
 
                 Button("Add Folder…") {
                     model.chooseFolder()

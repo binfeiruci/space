@@ -832,7 +832,7 @@ final class AppModel: ObservableObject {
             selectTab(existing.id)
             return
         }
-        openNewTerminal()
+        openNewStandaloneTerminal()
     }
 
     func openNewTerminal(for url: URL) {
@@ -861,15 +861,23 @@ final class AppModel: ObservableObject {
         lastActiveTabIDByFolderPath[folderURL.path] = session.id
     }
 
-    func openNewTerminal() {
+    func openNewStandaloneTerminal() {
         openStandaloneTerminal(
             workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
         )
     }
 
+    func openNewTerminalInActiveContext() {
+        if let folderURL = activeTerminalTab?.ownerFolderURL {
+            openNewTerminal(for: folderURL)
+        } else {
+            openNewStandaloneTerminal()
+        }
+    }
+
     func ensureTerminalTab() {
         guard terminalTabs.isEmpty else { return }
-        openNewTerminal()
+        openNewStandaloneTerminal()
     }
 
     private func openStandaloneTerminal(workingDirectoryURL: URL) {

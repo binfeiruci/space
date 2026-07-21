@@ -42,7 +42,7 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testNewTabCreatesAStandaloneSidebarTab() throws {
+    func testNewTabCreatesATabInTheActiveFolder() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
@@ -64,13 +64,36 @@ final class SpaceUITests: XCTestCase {
                 "standalone-terminal-tab-row:"
             )
         )
+        let secondFolderTabAppears = NSPredicate {
+            _, _ in folderTabRows.count == 2
+        }
+        expectation(for: secondFolderTabAppears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+        XCTAssertEqual(standaloneTabRows.count, 0)
+        XCTAssertFalse(app.staticTexts["terminal-title"].exists)
+    }
+
+    @MainActor
+    func testNewStandaloneTabMenuItemCreatesAStandaloneTab() throws {
+        let (app, _) = try launchIsolatedApp()
+        defer { app.terminate() }
+
+        app.menuBars.menuBarItems["File"].click()
+        let menuItem = app.menuItems["New Standalone Tab"]
+        XCTAssertTrue(menuItem.waitForExistence(timeout: 3))
+        menuItem.click()
+
+        let standaloneTabRows = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        )
         let standaloneTabAppears = NSPredicate {
             _, _ in standaloneTabRows.count == 1
         }
         expectation(for: standaloneTabAppears, evaluatedWith: nil)
         waitForExpectations(timeout: 3)
-        XCTAssertEqual(folderTabRows.count, 1)
-        XCTAssertFalse(app.staticTexts["terminal-title"].exists)
     }
 
     @MainActor
@@ -78,27 +101,26 @@ final class SpaceUITests: XCTestCase {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
-        let folderTab = app.images.matching(
+        let folderTabs = app.images.matching(
             NSPredicate(
                 format: "identifier BEGINSWITH %@",
                 "terminal-tab-row:"
             )
-        ).firstMatch
-        XCTAssertTrue(folderTab.waitForExistence(timeout: 3))
+        )
+        XCTAssertTrue(folderTabs.firstMatch.waitForExistence(timeout: 3))
         app.typeKey("t", modifierFlags: .command)
-        let standaloneTab = app.images.matching(
-            NSPredicate(
-                format: "identifier BEGINSWITH %@",
-                "standalone-terminal-tab-row:"
-            )
-        ).firstMatch
-        XCTAssertTrue(standaloneTab.waitForExistence(timeout: 3))
+        let secondTabAppears = NSPredicate { _, _ in folderTabs.count == 2 }
+        expectation(for: secondTabAppears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+
+        let firstTab = app.images[folderTabs.element(boundBy: 0).identifier]
+        let secondTab = app.images[folderTabs.element(boundBy: 1).identifier]
 
         for _ in 0 ..< 5 {
-            folderTab.click()
-            XCTAssertEqual(folderTab.value as? String, "Selected")
-            standaloneTab.click()
-            XCTAssertEqual(standaloneTab.value as? String, "Selected")
+            firstTab.click()
+            XCTAssertEqual(firstTab.value as? String, "Selected")
+            secondTab.click()
+            XCTAssertEqual(secondTab.value as? String, "Selected")
         }
     }
 

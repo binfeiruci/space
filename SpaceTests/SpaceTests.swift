@@ -449,7 +449,7 @@ struct SpaceTests {
         let model = AppModel(defaults: defaults)
         let initialTabID = try #require(model.activeTabID)
 
-        model.openNewTerminal()
+        model.openNewStandaloneTerminal()
 
         let tab = try #require(model.activeTerminalTab)
         let session = try #require(model.activeTerminalSession)
@@ -474,6 +474,51 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func newTabInActiveContextUsesTheActiveFolder() throws {
+        defer { removeIsolatedDefaults() }
+        let folder = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: folder),
+            initialFolderURL: folder
+        )
+        let initialTabID = try #require(model.activeTabID)
+
+        model.openNewTerminalInActiveContext()
+
+        let tab = try #require(model.activeTerminalTab)
+        let session = try #require(model.activeTerminalSession)
+        #expect(tab.id != initialTabID)
+        #expect(tab.ownerFolderURL == folder.standardizedFileURL)
+        #expect(model.standaloneTabs.isEmpty)
+        #expect(model.activeScopeTabs.count == 2)
+        #expect(session.workingDirectoryURL == folder.standardizedFileURL)
+
+        for terminalID in model.terminalSessions.map(\.id) {
+            model.closeTerminal(terminalID, recordsForRestoration: false)
+        }
+    }
+
+    @Test @MainActor
+    func newTabInStandaloneContextStaysStandalone() throws {
+        defer { removeIsolatedDefaults() }
+        let defaults = isolatedDefaults(
+            scope: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let model = AppModel(defaults: defaults)
+
+        model.openNewTerminalInActiveContext()
+
+        #expect(model.standaloneTabs.count == 2)
+        #expect(model.activeTerminalTab?.ownerFolderURL == nil)
+        #expect(model.activeScopeTabs.count == 2)
+
+        for terminalID in model.terminalSessions.map(\.id) {
+            model.closeTerminal(terminalID, recordsForRestoration: false)
+        }
+    }
+
+    @Test @MainActor
     func removingHomeFolderKeepsStandaloneHomeTab() throws {
         defer { removeIsolatedDefaults() }
         let defaults = isolatedDefaults(
@@ -483,7 +528,7 @@ struct SpaceTests {
         let model = AppModel(defaults: defaults, initialFolderURL: home)
         let folderTabID = try #require(model.activeTerminalTab?.id)
 
-        model.openNewTerminal()
+        model.openNewStandaloneTerminal()
         let standaloneTabID = try #require(model.activeTerminalTab?.id)
         model.removeFolder(home)
 
@@ -1236,7 +1281,7 @@ struct SpaceTests {
         let standaloneTabID = try #require(model.activeTabID)
         #expect(model.standaloneTabs.map(\.id) == [standaloneTabID])
 
-        model.openNewTerminal()
+        model.openNewStandaloneTerminal()
         #expect(model.activeTabID != standaloneTabID)
         model.selectTab(standaloneTabID)
 
