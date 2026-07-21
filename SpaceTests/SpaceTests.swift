@@ -1568,7 +1568,7 @@ struct SpaceTests {
         model.openNewTerminal(for: folder)
         let secondID = try #require(model.activeTerminalID)
 
-        model.moveTab(firstID, to: secondID)
+        model.setTabOrder([secondID, firstID])
 
         #expect(model.activeScopeTabs.map(\.id) == [secondID, firstID])
     }

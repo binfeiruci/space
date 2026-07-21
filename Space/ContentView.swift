@@ -213,6 +213,27 @@ private enum SidebarSelection: Hashable {
     case tab(UUID)
 }
 
+private struct SidebarRowColors {
+    let primary: Color
+    let secondary: Color
+
+    init(appearance: NSAppearance = NSApp.effectiveAppearance) {
+        primary = Self.resolve(.labelColor, appearance: appearance)
+        secondary = Self.resolve(.secondaryLabelColor, appearance: appearance)
+    }
+
+    private static func resolve(
+        _ color: NSColor,
+        appearance: NSAppearance
+    ) -> Color {
+        var resolvedColor = color.cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            resolvedColor = color.cgColor
+        }
+        return Color(cgColor: resolvedColor)
+    }
+}
+
 private struct FolderSidebar: View {
     @EnvironmentObject private var model: AppModel
     @State private var expandedFolderPaths: Set<String> = []
@@ -249,31 +270,14 @@ private struct FolderSidebar: View {
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: selection) {
-                if !model.standaloneTabs.isEmpty {
+                let standaloneTabs = tabs(ownerFolderURL: nil)
+                if !standaloneTabs.wrappedValue.isEmpty {
                     Section("Tabs") {
-                        ForEach(
-                            Array(model.standaloneTabs.enumerated()),
-                            id: \.element.id
-                        ) { index, tab in
-                            if let session = model.terminalSessions.first(
-                                where: { $0.id == tab.focusedTerminalID }
-                            ) {
-                                SidebarTerminalTabRow(
-                                    tab: tab,
-                                    session: session,
-                                    shortcutLabel: shortcutLabel(
-                                        at: index,
-                                        tabCount: model.standaloneTabs.count,
-                                        ownerFolderURL: nil
-                                    ),
-                                    accessibilityIdentifier:
-                                        "standalone-terminal-tab-row:"
-                                        + tab.id.uuidString
-                                )
-                                .tag(SidebarSelection.tab(tab.id))
-                                .id(sidebarTabID(tab.id))
-                            }
-                        }
+                        tabRows(
+                            standaloneTabs,
+                            ownerFolderURL: nil,
+                            accessibilityPrefix: "standalone-terminal-tab-row:"
+                        )
                     }
                 }
 
@@ -312,38 +316,54 @@ private struct FolderSidebar: View {
     ) -> some View {
         ForEach(folders, editActions: .move) { folder in
             let value = folder.wrappedValue
-            let folderTabs = tabs(for: value)
+            let folderTabs = tabs(ownerFolderURL: value.url)
             DisclosureGroup(
                 isExpanded: expansionBinding(for: value)
             ) {
-                ForEach(Array(folderTabs.enumerated()), id: \.element.id) {
-                    index, tab in
-                    if let session = model.terminalSessions.first(where: {
-                        $0.id == tab.focusedTerminalID
-                    }) {
-                        SidebarTerminalTabRow(
-                            tab: tab,
-                            session: session,
-                            shortcutLabel: shortcutLabel(
-                                at: index,
-                                tabCount: folderTabs.count,
-                                ownerFolderURL: value.url
-                            ),
-                            accessibilityIdentifier:
-                                "terminal-tab-row:" + tab.id.uuidString
-                        )
-                        .tag(SidebarSelection.tab(tab.id))
-                        .id(sidebarTabID(tab.id))
-                    }
-                }
+                tabRows(
+                    folderTabs,
+                    ownerFolderURL: value.url,
+                    accessibilityPrefix: "terminal-tab-row:"
+                )
             } label: {
                 FolderRow(
                     folder: value,
-                    parentPath: disambiguatingParentPath(for: value)
+                    parentPath: disambiguatingParentPath(for: value),
+                    colors: rowColors
                 )
             }
             .tag(SidebarSelection.folder(value.id))
             .id(sidebarItemID(for: value.url))
+        }
+    }
+
+    private func tabRows(
+        _ tabs: Binding<[TerminalTabState]>,
+        ownerFolderURL: URL?,
+        accessibilityPrefix: String
+    ) -> some View {
+        ForEach(tabs, editActions: .move) { tab in
+            let value = tab.wrappedValue
+            let visibleTabs = tabs.wrappedValue
+            let index = visibleTabs.firstIndex { $0.id == value.id } ?? 0
+            if let session = model.terminalSessions.first(where: {
+                $0.id == value.focusedTerminalID
+            }) {
+                SidebarTerminalTabRow(
+                    tab: value,
+                    session: session,
+                    shortcutLabel: shortcutLabel(
+                        at: index,
+                        tabCount: visibleTabs.count,
+                        ownerFolderURL: ownerFolderURL
+                    ),
+                    accessibilityIdentifier:
+                        accessibilityPrefix + value.id.uuidString,
+                    colors: rowColors
+                )
+                .tag(SidebarSelection.tab(value.id))
+                .id(sidebarTabID(value.id))
+            }
         }
     }
 
@@ -374,18 +394,39 @@ private struct FolderSidebar: View {
                 folder: folder.wrappedValue,
                 parentPath: disambiguatingParentPath(
                     for: folder.wrappedValue
-                )
+                ),
+                colors: rowColors
             )
             .tag(SidebarSelection.folder(folder.wrappedValue.id))
             .id(sidebarItemID(for: folder.wrappedValue.url))
         }
     }
 
-    private func tabs(for folder: Folder) -> [TerminalTabState] {
-        let path = folder.url.standardizedFileURL.path
-        return model.terminalTabs.filter {
-            $0.ownerFolderURL?.standardizedFileURL.path == path
-        }
+    private func tabs(
+        ownerFolderURL: URL?
+    ) -> Binding<[TerminalTabState]> {
+        let ownerPath = ownerFolderURL?.standardizedFileURL.path
+        return Binding(
+            get: {
+                model.terminalTabs.filter {
+                    $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
+                }
+            },
+            set: { reorderedTabs in
+                var reordered = reorderedTabs.makeIterator()
+                let allTabs = model.terminalTabs.map { tab in
+                    guard tab.ownerFolderURL?.standardizedFileURL.path
+                            == ownerPath
+                    else { return tab }
+                    return reordered.next() ?? tab
+                }
+                model.setTabOrder(allTabs.map(\.id))
+            }
+        )
+    }
+
+    private var rowColors: SidebarRowColors {
+        SidebarRowColors()
     }
 
     private func expansionBinding(for folder: Folder) -> Binding<Bool> {
@@ -454,6 +495,7 @@ private struct FolderRow: View {
     @EnvironmentObject private var model: AppModel
     let folder: Folder
     let parentPath: String?
+    let colors: SidebarRowColors
 
     private var folderPath: String {
         folder.url.standardizedFileURL.path
@@ -476,16 +518,20 @@ private struct FolderRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: isActive ? "folder.fill" : "folder")
-                .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                .foregroundStyle(
+                    isActive ? Color.accentColor : colors.secondary
+                )
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     if let terminalActivityFrame {
                         Text(terminalActivityFrame)
                             .font(.caption.weight(.semibold).monospaced())
+                            .foregroundStyle(colors.primary)
                     }
 
                     Text(folder.displayName)
+                        .foregroundStyle(colors.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -493,7 +539,7 @@ private struct FolderRow: View {
                 if let parentPath {
                     Text(parentPath)
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(colors.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -547,6 +593,7 @@ private struct SidebarTerminalTabRow: View {
     @ObservedObject private var terminal: TerminalViewState
     let shortcutLabel: String?
     let accessibilityIdentifier: String
+    let colors: SidebarRowColors
     @State private var foregroundProcessName: String?
     @State private var isHovering = false
 
@@ -554,13 +601,15 @@ private struct SidebarTerminalTabRow: View {
         tab: TerminalTabState,
         session: TerminalSession,
         shortcutLabel: String?,
-        accessibilityIdentifier: String
+        accessibilityIdentifier: String,
+        colors: SidebarRowColors
     ) {
         self.tab = tab
         _session = ObservedObject(wrappedValue: session)
         _terminal = ObservedObject(wrappedValue: session.terminal)
         self.shortcutLabel = shortcutLabel
         self.accessibilityIdentifier = accessibilityIdentifier
+        self.colors = colors
         _foregroundProcessName = State(initialValue: session.currentProcessName)
     }
 
@@ -583,16 +632,17 @@ private struct SidebarTerminalTabRow: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(colors.secondary)
             .help("Close Tab")
             .accessibilityLabel("Close tab \(title)")
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
 
             Image(systemName: "terminal")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(colors.secondary)
 
             Text(title)
+                .foregroundStyle(colors.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
 
@@ -611,7 +661,7 @@ private struct SidebarTerminalTabRow: View {
             if let shortcutLabel {
                 Text(shortcutLabel)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(colors.secondary)
             }
         }
         .contentShape(Rectangle())
@@ -623,16 +673,6 @@ private struct SidebarTerminalTabRow: View {
         .accessibilityIdentifier(accessibilityIdentifier)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
-        .draggable(tab.id.uuidString)
-        .dropDestination(for: String.self) { values, _ in
-            guard let value = values.first,
-                  let sourceID = UUID(uuidString: value) else { return false }
-            model.moveTab(sourceID, to: tab.id)
-            return true
-        }
-        .onTapGesture {
-            model.selectTab(tab.id)
-        }
         .contextMenu {
             Button("Rename Tab…") {
                 model.promptRenameTab(tab.id)

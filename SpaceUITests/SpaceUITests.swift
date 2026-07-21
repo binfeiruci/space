@@ -141,9 +141,6 @@ final class SpaceUITests: XCTestCase {
         let closeTabItem = app.menuItems["Close Tab"]
         XCTAssertTrue(closeTabItem.waitForExistence(timeout: 3))
         closeTabItem.click()
-        let confirmCloseButton = app.sheets.buttons["Close Tab"]
-        XCTAssertTrue(confirmCloseButton.waitForExistence(timeout: 3))
-        confirmCloseButton.click()
 
         let windowClosed = NSPredicate { _, _ in !window.exists }
         expectation(for: windowClosed, evaluatedWith: nil)
@@ -273,6 +270,91 @@ final class SpaceUITests: XCTestCase {
 
         let moved = NSPredicate { _, _ in third.frame.minY < second.frame.minY }
         expectation(for: moved, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
+    func testTabsCanBeReorderedByDragging() throws {
+        let (app, _) = try launchIsolatedApp(folderNames: [])
+        defer { app.terminate() }
+
+        let tabs = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        )
+        XCTAssertEqual(tabs.count, 1)
+        app.typeKey("t", modifierFlags: .command)
+        dragSecondTabBeforeFirst(tabs, in: app)
+    }
+
+    @MainActor
+    func testFolderTabsCanBeReorderedByDragging() throws {
+        let (app, folders) = try launchIsolatedApp()
+        defer { app.terminate() }
+
+        let folder = app.descendants(matching: .any)[
+            "folder-row:\(folders[0].path)"
+        ]
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        folder.rightClick()
+        let newTabItems = app.menuItems.matching(identifier: "New Tab")
+        let newTabItem = (0..<newTabItems.count)
+            .map { newTabItems.element(boundBy: $0) }
+            .first(where: \.isHittable)
+        XCTAssertNotNil(newTabItem)
+        guard let newTabItem else { return }
+        newTabItem.click()
+
+        let tabs = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        )
+        dragSecondTabBeforeFirst(tabs, in: app)
+    }
+
+    @MainActor
+    private func dragSecondTabBeforeFirst(
+        _ tabs: XCUIElementQuery,
+        in app: XCUIApplication
+    ) {
+        let twoTabsExist = NSPredicate { _, _ in tabs.count == 2 }
+        expectation(for: twoTabsExist, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+
+        let firstIdentifier = tabs.element(boundBy: 0).identifier
+        let secondIdentifier = tabs.element(boundBy: 1).identifier
+        let first = app.images[firstIdentifier]
+        let second = app.images[secondIdentifier]
+        let rows = app.outlines.firstMatch.cells
+        let firstRow = rows.containing(
+            .any,
+            identifier: firstIdentifier
+        ).firstMatch
+        let secondRow = rows.containing(
+            .any,
+            identifier: secondIdentifier
+        ).firstMatch
+        XCTAssertTrue(firstRow.exists)
+        XCTAssertTrue(secondRow.exists)
+
+        let source = secondRow.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
+        )
+        let target = firstRow.coordinate(
+            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)
+        )
+        source.press(forDuration: 0.5, thenDragTo: target)
+
+        let moved = NSPredicate { _, _ in second.frame.minY < first.frame.minY }
+        expectation(for: moved, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+
+        let draggedTabIsVisibleAgain = NSPredicate(format: "hittable == true")
+        expectation(for: draggedTabIsVisibleAgain, evaluatedWith: second)
         waitForExpectations(timeout: 3)
     }
 

@@ -1139,24 +1139,13 @@ final class AppModel: ObservableObject {
         splitNavigationTarget(in: direction) != nil
     }
 
-    func moveTab(_ sourceTabID: UUID, to targetTabID: UUID) {
-        guard sourceTabID != targetTabID,
-              let sourceIndex = terminalTabs.firstIndex(where: {
-                  $0.id == sourceTabID
-              }),
-              let targetIndex = terminalTabs.firstIndex(where: {
-                  $0.id == targetTabID
-              }),
-              terminalTabs[sourceIndex].ownerFolderURL
-                  == terminalTabs[targetIndex].ownerFolderURL else { return }
-        let tab = terminalTabs.remove(at: sourceIndex)
-        guard let updatedTargetIndex = terminalTabs.firstIndex(where: {
-            $0.id == targetTabID
-        }) else { return }
-        let insertionIndex = sourceIndex < targetIndex
-            ? updatedTargetIndex + 1
-            : updatedTargetIndex
-        terminalTabs.insert(tab, at: insertionIndex)
+    func setTabOrder(_ orderedTabIDs: [UUID]) {
+        guard orderedTabIDs.count == terminalTabs.count,
+              Set(orderedTabIDs) == Set(terminalTabs.map(\.id)) else { return }
+        let tabsByID = Dictionary(
+            uniqueKeysWithValues: terminalTabs.map { ($0.id, $0) }
+        )
+        terminalTabs = orderedTabIDs.compactMap { tabsByID[$0] }
     }
 
     func requestCloseActiveTerminal() {
