@@ -316,7 +316,7 @@ indirect enum TerminalSplitNode: Equatable {
                 id: id,
                 axis: axis,
                 ratio: id == splitID
-                    ? min(max(newRatio, 0.1), 0.9)
+                    ? min(max(newRatio, 0), 1)
                     : ratio,
                 first: first.settingRatio(newRatio, for: splitID),
                 second: second.settingRatio(newRatio, for: splitID)
@@ -360,7 +360,7 @@ indirect enum TerminalSplitNode: Equatable {
         case let .pane(id):
             return [id: bounds]
         case let .split(_, axis, ratio, first, second):
-            let clampedRatio = min(max(ratio, 0.1), 0.9)
+            let clampedRatio = min(max(ratio, 0), 1)
             let firstBounds: CGRect
             let secondBounds: CGRect
             switch axis {
@@ -403,7 +403,7 @@ indirect enum TerminalSplitNode: Equatable {
 
 struct TerminalTabState: Identifiable, Equatable {
     let id: UUID
-    let folderURL: URL
+    let ownerFolderURL: URL?
     var root: TerminalSplitNode
     var focusedTerminalID: UUID
     var customTitle: String? = nil
@@ -420,13 +420,18 @@ struct TerminalTabState: Identifiable, Equatable {
     }
 }
 
+private struct ClosedTerminalLocation {
+    let workingDirectoryURL: URL
+    let ownerFolderURL: URL?
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var folders: [Folder]
-    @Published private(set) var activeFolderURL: URL?
+    @Published private var sidebarFolderPaths: [String]
     @Published private(set) var terminalSessions: [TerminalSession]
     @Published private(set) var terminalTabs: [TerminalTabState]
-    @Published private(set) var activeTerminalID: UUID?
+    @Published private(set) var activeTabID: UUID?
     @Published private(set) var alertRequest: AlertRequest?
     @Published private(set) var renameRequest: TabRenameRequest?
     @Published private(set) var memoSaveNotice: MemoSaveNotice?
@@ -440,12 +445,14 @@ final class AppModel: ObservableObject {
     var agentAttentionHandler:
         ((UUID, URL, AgentAttentionNotification) -> Void)?
     var agentAttentionClearedHandler: ((UUID) -> Void)?
+    var closeWindowHandler: (() -> Void)?
 
     private let defaults: UserDefaults
     private var agentAttentionCancellables: [UUID: AnyCancellable] = [:]
     private var agentAttentionFocusCancellables: [UUID: AnyCancellable] = [:]
     private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
-    private var recentlyClosedTerminalFolderURLs: [URL] = []
+    private var recentlyClosedTerminalLocations: [ClosedTerminalLocation] = []
+    private var lastActiveStandaloneTabID: UUID?
     private var lastActiveTabIDByFolderPath: [String: UUID] = [:]
 
     init(
@@ -456,77 +463,120 @@ final class AppModel: ObservableObject {
         settings = AppSettings(defaults: defaults)
 
         let restoredFolders = Self.restoredFolders(from: defaults)
+        let requestedInitialFolderURL = Self.validFolderURL(initialFolderURL)
         let folderURLs: [URL]
-        if let initialFolder = Self.validFolderURL(initialFolderURL) {
+        if let initialFolder = requestedInitialFolderURL {
             folderURLs = [initialFolder]
         } else {
             folderURLs = restoredFolders
         }
-        let restoredActiveFolderURL = Self.restoredActiveFolderURL(
-            from: defaults,
-            folders: folderURLs
-        )
-        let initialFolderURL = restoredActiveFolderURL ?? folderURLs.first
 
         folders = folderURLs.map { Folder(url: $0) }
-        activeFolderURL = initialFolderURL
+        sidebarFolderPaths = folderURLs.map {
+            $0.standardizedFileURL.path
+        }
         terminalSessions = []
         terminalTabs = []
-        activeTerminalID = nil
+        activeTabID = nil
 
-        if let initialFolderURL {
+        if let initialFolderURL = requestedInitialFolderURL {
             let initialSession = TerminalSession(
-                folderURL: initialFolderURL,
+                workingDirectoryURL: initialFolderURL,
                 settings: settings
             )
             terminalSessions = [initialSession]
             terminalTabs = [TerminalTabState(
                 id: initialSession.id,
-                folderURL: initialFolderURL,
+                ownerFolderURL: initialFolderURL,
                 root: .pane(initialSession.id),
                 focusedTerminalID: initialSession.id
             )]
-            activeTerminalID = initialSession.id
+            activeTabID = initialSession.id
             lastActiveTabIDByFolderPath[initialFolderURL.path] = initialSession.id
             bindCloseHandler(to: initialSession)
+        } else {
+            let initialSession = TerminalSession(
+                workingDirectoryURL: FileManager.default
+                    .homeDirectoryForCurrentUser,
+                settings: settings
+            )
+            terminalSessions = [initialSession]
+            terminalTabs = [TerminalTabState(
+                id: initialSession.id,
+                ownerFolderURL: nil,
+                root: .pane(initialSession.id),
+                focusedTerminalID: initialSession.id
+            )]
+            activeTabID = initialSession.id
+            lastActiveStandaloneTabID = initialSession.id
+            bindCloseHandler(to: initialSession)
         }
-        persistFolderState()
+        persistFolders()
     }
 
     var folderURLs: [URL] {
         folders.map(\.url)
     }
 
-    var activeFolderTabs: [TerminalTabState] {
-        guard let activeFolderURL else { return [] }
-        let activePath = activeFolderURL.standardizedFileURL.path
+    var activeScopeTabs: [TerminalTabState] {
+        guard let activeTerminalTab else { return [] }
         return terminalTabs.filter {
-            $0.folderURL.standardizedFileURL.path == activePath
+            $0.ownerFolderURL == activeTerminalTab.ownerFolderURL
         }
     }
 
+    var standaloneTabs: [TerminalTabState] {
+        terminalTabs.filter { $0.ownerFolderURL == nil }
+    }
+
     var foldersWithTabs: [Folder] {
-        folders.filter(folderHasTabs)
+        sidebarOrderedFolders.filter(folderHasTabs)
     }
 
     var foldersWithoutTabs: [Folder] {
-        folders.filter { !folderHasTabs($0) }
+        sidebarOrderedFolders.filter { !folderHasTabs($0) }
     }
 
     var foldersInSidebarOrder: [Folder] {
         foldersWithTabs + foldersWithoutTabs
     }
 
+    var tabGroupCount: Int {
+        folders.count + 1
+    }
+
+    private var sidebarOrderedFolders: [Folder] {
+        let orderByPath = Dictionary(
+            uniqueKeysWithValues: sidebarFolderPaths.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
+        return folders.sorted { lhs, rhs in
+            let lhsPath = lhs.url.standardizedFileURL.path
+            let rhsPath = rhs.url.standardizedFileURL.path
+            return orderByPath[lhsPath, default: .max]
+                < orderByPath[rhsPath, default: .max]
+        }
+    }
+
     func folderHasTabs(_ folder: Folder) -> Bool {
         let folderPath = folder.url.standardizedFileURL.path
         return terminalTabs.contains {
-            $0.folderURL.standardizedFileURL.path == folderPath
+            $0.ownerFolderURL?.standardizedFileURL.path == folderPath
         }
     }
 
     var activeTerminalTab: TerminalTabState? {
-        guard let activeTerminalID else { return nil }
-        return terminalTabs.first { $0.root.contains(activeTerminalID) }
+        guard let activeTabID else { return nil }
+        return terminalTabs.first { $0.id == activeTabID }
+    }
+
+    var activeTerminalID: UUID? {
+        activeTerminalTab?.focusedTerminalID
+    }
+
+    var activeFolderURL: URL? {
+        activeTerminalTab?.ownerFolderURL
     }
 
     var activeTabTerminalIDs: [UUID] {
@@ -539,7 +589,7 @@ final class AppModel: ObservableObject {
     }
 
     var canRestoreClosedTerminal: Bool {
-        !recentlyClosedTerminalFolderURLs.isEmpty
+        !recentlyClosedTerminalLocations.isEmpty
     }
 
     func chooseFolder() {
@@ -577,7 +627,7 @@ final class AppModel: ObservableObject {
         do {
             try FolderMemoFile.append(
                 selection,
-                in: session.folderURL
+                in: session.workingDirectoryURL
             )
             memoSaveNotice = MemoSaveNotice(
                 message: "Added to .memo",
@@ -602,6 +652,10 @@ final class AppModel: ObservableObject {
 
     func toggleSidebar() {
         isSidebarVisible.toggle()
+    }
+
+    func setSidebarVisible(_ isVisible: Bool) {
+        isSidebarVisible = isVisible
     }
 
     func addFolders(_ urls: [URL]) {
@@ -643,7 +697,8 @@ final class AppModel: ObservableObject {
             return .duplicate(folderURL)
         }
         folders.append(Folder(url: folderURL))
-        persistFolderState()
+        sidebarFolderPaths.append(folderURL.path)
+        persistFolders()
 
         if activate {
             activateFolder(folderURL)
@@ -662,8 +717,11 @@ final class AppModel: ObservableObject {
             $0.standardizedFileURL.path == url.standardizedFileURL.path
         }) else { return }
         let folderPath = folder.standardizedFileURL.path
+        let folderTerminalIDs = Set(terminalTabs.filter {
+            $0.ownerFolderURL?.standardizedFileURL.path == folderPath
+        }.flatMap(\.terminalIDs))
         let folderSessions = terminalSessions.filter {
-            $0.folderURL.standardizedFileURL.path == folderPath
+            folderTerminalIDs.contains($0.id)
         }
         guard folderSessions.contains(where: \.isRunningForegroundProgram) else {
             removeFolder(folder)
@@ -688,11 +746,11 @@ final class AppModel: ObservableObject {
             $0.url.standardizedFileURL.path == folder.path
         }) else { return }
 
-        let removedSessionIDs = Set(terminalSessions.compactMap { session in
-            session.folderURL.standardizedFileURL.path == folder.path
-                ? session.id
-                : nil
-        })
+        let removedTabs = terminalTabs.filter {
+            $0.ownerFolderURL?.standardizedFileURL.path == folder.path
+        }
+        let removedTabIDs = Set(removedTabs.map(\.id))
+        let removedSessionIDs = Set(removedTabs.flatMap(\.terminalIDs))
         for session in terminalSessions where removedSessionIDs.contains(session.id) {
             session.terminal.onClose = nil
             agentAttentionCancellables.removeValue(forKey: session.id)
@@ -702,31 +760,20 @@ final class AppModel: ObservableObject {
         }
         terminalSessions.removeAll { removedSessionIDs.contains($0.id) }
         terminalTabs.removeAll {
-            $0.folderURL.standardizedFileURL.path == folder.path
+            $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
-        recentlyClosedTerminalFolderURLs.removeAll {
-            $0.standardizedFileURL.path == folder.path
+        recentlyClosedTerminalLocations.removeAll {
+            $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
         folders.remove(at: folderIndex)
+        sidebarFolderPaths.removeAll { $0 == folder.path }
         lastActiveTabIDByFolderPath.removeValue(forKey: folder.path)
 
-        if activeTerminalID.map(removedSessionIDs.contains) == true {
-            activeTerminalID = nil
-        }
-        if let activeTerminalSession {
-            activeFolderURL = activeTerminalSession.folderURL
-        } else if let remainingTab = terminalTabs.last {
-            activeFolderURL = remainingTab.folderURL
-            activeTerminalID = remainingTab.focusedTerminalID
-        } else if let firstFolder = folderURLs.first {
-            activeFolderURL = firstFolder
-            openNewTerminal(for: firstFolder)
-        } else {
-            activeFolderURL = nil
-            activeTerminalID = nil
+        if activeTabID.map(removedTabIDs.contains) == true {
+            activeTabID = terminalTabs.last?.id
         }
 
-        persistFolderState()
+        persistFolders()
     }
 
     func setFolderOrder(_ orderedFolders: [Folder]) {
@@ -735,7 +782,10 @@ final class AppModel: ObservableObject {
             return
         }
         folders = orderedFolders
-        persistFolderState()
+        sidebarFolderPaths = orderedFolders.map {
+            $0.url.standardizedFileURL.path
+        }
+        persistFolders()
     }
 
     func activateFolder(_ url: URL) {
@@ -750,42 +800,117 @@ final class AppModel: ObservableObject {
         let rememberedTab = lastActiveTabIDByFolderPath[folderPath].flatMap {
             rememberedID in terminalTabs.first(where: {
                 $0.id == rememberedID
-                    && $0.folderURL.standardizedFileURL.path == folderPath
+                    && $0.ownerFolderURL?.standardizedFileURL.path == folderPath
             })
         }
         if let existing = rememberedTab ?? terminalTabs.last(where: {
-            $0.folderURL.standardizedFileURL.path == folderPath
+            $0.ownerFolderURL?.standardizedFileURL.path == folderPath
         }) {
-            activeFolderURL = folderURL
-            activeTerminalID = existing.focusedTerminalID
+            activeTabID = existing.id
             lastActiveTabIDByFolderPath[folderPath] = existing.id
-            persistFolderState()
             return
         }
 
         openNewTerminal(for: folderURL)
     }
 
+    private func activateStandaloneTabGroup() {
+        let tabs = standaloneTabs
+        if let terminalID = latestAgentAttentionTerminalID(
+            in: tabs.flatMap(\.terminalIDs)
+        ) {
+            selectTerminal(terminalID)
+            return
+        }
+        if let rememberedTab = lastActiveStandaloneTabID.flatMap({ id in
+            tabs.first(where: { $0.id == id })
+        }) {
+            selectTab(rememberedTab.id)
+            return
+        }
+        if let existing = tabs.last {
+            selectTab(existing.id)
+            return
+        }
+        openNewTerminal()
+    }
+
     func openNewTerminal(for url: URL) {
         guard let folderURL = folderURL(containing: url.standardizedFileURL)
         else { return }
 
+        let isOpeningFirstTab = !terminalTabs.contains {
+            $0.ownerFolderURL?.standardizedFileURL.path == folderURL.path
+        }
         let session = TerminalSession(
-            folderURL: folderURL,
+            workingDirectoryURL: folderURL,
             settings: settings
         )
         bindCloseHandler(to: session)
-        activeFolderURL = folderURL
         terminalSessions.append(session)
         terminalTabs.append(TerminalTabState(
             id: session.id,
-            folderURL: folderURL,
+            ownerFolderURL: folderURL,
             root: .pane(session.id),
             focusedTerminalID: session.id
         ))
-        activeTerminalID = session.id
+        if isOpeningFirstTab {
+            moveFolderToEndOfCurrentGroup(folderURL)
+        }
+        activeTabID = session.id
         lastActiveTabIDByFolderPath[folderURL.path] = session.id
-        persistFolderState()
+    }
+
+    func openNewTerminal() {
+        openStandaloneTerminal(
+            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
+        )
+    }
+
+    func ensureTerminalTab() {
+        guard terminalTabs.isEmpty else { return }
+        openNewTerminal()
+    }
+
+    private func openStandaloneTerminal(workingDirectoryURL: URL) {
+        guard let workingDirectoryURL = Self.validFolderURL(
+            workingDirectoryURL
+        ) else { return }
+        let session = TerminalSession(
+            workingDirectoryURL: workingDirectoryURL,
+            settings: settings
+        )
+        bindCloseHandler(to: session)
+        terminalSessions.append(session)
+        terminalTabs.append(TerminalTabState(
+            id: session.id,
+            ownerFolderURL: nil,
+            root: .pane(session.id),
+            focusedTerminalID: session.id
+        ))
+        activeTabID = session.id
+        lastActiveStandaloneTabID = session.id
+    }
+
+    private func moveFolderToEndOfCurrentGroup(_ folderURL: URL) {
+        var orderedFolders = sidebarOrderedFolders
+        guard let sourceIndex = orderedFolders.firstIndex(where: {
+            $0.url.standardizedFileURL.path == folderURL.path
+        }) else { return }
+
+        let hasTabs = folderHasTabs(orderedFolders[sourceIndex])
+        let folder = orderedFolders.remove(at: sourceIndex)
+        let insertionIndex: Int
+        if hasTabs {
+            insertionIndex = orderedFolders.lastIndex(where: folderHasTabs)
+                .map { $0 + 1 } ?? 0
+        } else {
+            insertionIndex = orderedFolders.endIndex
+        }
+        orderedFolders.insert(folder, at: insertionIndex)
+        sidebarFolderPaths = orderedFolders.map {
+            $0.url.standardizedFileURL.path
+        }
     }
 
     func splitActiveTerminal(direction: TerminalSplitDirection) {
@@ -813,7 +938,7 @@ final class AppModel: ObservableObject {
               }) else { return nil }
 
         let session = TerminalSession(
-            folderURL: activeSession.folderURL,
+            workingDirectoryURL: activeSession.workingDirectoryURL,
             settings: settings,
             surfaceContext: .split
         )
@@ -825,25 +950,28 @@ final class AppModel: ObservableObject {
             direction: direction
         ).balancedForEqualSplits()
         terminalTabs[tabIndex].focusedTerminalID = session.id
-        self.activeTerminalID = session.id
-        lastActiveTabIDByFolderPath[activeSession.folderURL.path] =
-            terminalTabs[tabIndex].id
-        persistFolderState()
+        if let folderURL = terminalTabs[tabIndex].ownerFolderURL {
+            lastActiveTabIDByFolderPath[folderURL.path] =
+                terminalTabs[tabIndex].id
+        }
         return session
     }
 
     func selectTerminal(_ id: UUID) {
-        guard let session = terminalSessions.first(where: { $0.id == id }),
+        guard terminalSessions.contains(where: { $0.id == id }),
               let tabIndex = terminalTabs.firstIndex(where: {
                   $0.root.contains(id)
               }) else { return }
         terminalTabs[tabIndex].focusedTerminalID = id
-        activeFolderURL = session.folderURL
-        activeTerminalID = session.id
+        let tab = terminalTabs[tabIndex]
+        activeTabID = tab.id
         clearAgentAttention(for: id)
-        lastActiveTabIDByFolderPath[session.folderURL.standardizedFileURL.path] =
-            terminalTabs[tabIndex].id
-        persistFolderState()
+        if let folderURL = tab.ownerFolderURL {
+            lastActiveTabIDByFolderPath[folderURL.standardizedFileURL.path] =
+                tab.id
+        } else {
+            lastActiveStandaloneTabID = tab.id
+        }
     }
 
     func selectTab(_ id: UUID) {
@@ -867,8 +995,11 @@ final class AppModel: ObservableObject {
 
     func folderRefreshingTitleFrame(_ url: URL) -> String? {
         let path = url.standardizedFileURL.path
+        let terminalIDs = Set(terminalTabs.filter {
+            $0.ownerFolderURL?.standardizedFileURL.path == path
+        }.flatMap(\.terminalIDs))
         for session in terminalSessions.reversed()
-        where session.folderURL.standardizedFileURL.path == path {
+        where terminalIDs.contains(session.id) {
             if let frame = refreshingTitleFrameByTerminalID[session.id] {
                 return frame
             }
@@ -924,7 +1055,11 @@ final class AppModel: ObservableObject {
         }
 
         agentAttentionByTerminalID[terminalID] = notification
-        agentAttentionHandler?(terminalID, session.folderURL, notification)
+        agentAttentionHandler?(
+            terminalID,
+            session.workingDirectoryURL,
+            notification
+        )
     }
 
     func clearVisibleAgentAttention() {
@@ -939,7 +1074,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectTab(at index: Int) -> Bool {
-        let tabs = activeFolderTabs
+        let tabs = activeScopeTabs
         guard tabs.indices.contains(index) else { return false }
         selectTab(tabs[index].id)
         return true
@@ -947,14 +1082,14 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectLastTab() -> Bool {
-        guard let tab = activeFolderTabs.last else { return false }
+        guard let tab = activeScopeTabs.last else { return false }
         selectTab(tab.id)
         return true
     }
 
     @discardableResult
     func selectAdjacentTab(offset: Int) -> Bool {
-        let tabs = activeFolderTabs
+        let tabs = activeScopeTabs
         guard tabs.count > 1,
               let activeTab = activeTerminalTab,
               let index = tabs.firstIndex(where: {
@@ -966,17 +1101,28 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func selectAdjacentFolder(offset: Int) -> Bool {
+    func selectAdjacentTabGroup(offset: Int) -> Bool {
         let orderedFolders = foldersInSidebarOrder
-        guard orderedFolders.count > 1,
-              let activeFolderURL,
-              let activeFolder = folderURL(containing: activeFolderURL),
-              let index = orderedFolders.firstIndex(where: {
-                  $0.url.standardizedFileURL.path == activeFolder.path
-              }) else { return false }
-        let next = (index + offset + orderedFolders.count)
-            % orderedFolders.count
-        activateFolder(orderedFolders[next].url)
+        let groupCount = orderedFolders.count + 1
+        guard groupCount > 1 else { return false }
+
+        let activeIndex: Int
+        if let activeFolderURL,
+           let activeFolder = folderURL(containing: activeFolderURL),
+           let folderIndex = orderedFolders.firstIndex(where: {
+               $0.url.standardizedFileURL.path == activeFolder.path
+           }) {
+            activeIndex = folderIndex + 1
+        } else {
+            activeIndex = 0
+        }
+
+        let next = (activeIndex + offset + groupCount) % groupCount
+        if next == 0 {
+            activateStandaloneTabGroup()
+        } else {
+            activateFolder(orderedFolders[next - 1].url)
+        }
         return true
     }
 
@@ -1001,8 +1147,8 @@ final class AppModel: ObservableObject {
               let targetIndex = terminalTabs.firstIndex(where: {
                   $0.id == targetTabID
               }),
-              terminalTabs[sourceIndex].folderURL
-                  == terminalTabs[targetIndex].folderURL else { return }
+              terminalTabs[sourceIndex].ownerFolderURL
+                  == terminalTabs[targetIndex].ownerFolderURL else { return }
         let tab = terminalTabs.remove(at: sourceIndex)
         guard let updatedTargetIndex = terminalTabs.firstIndex(where: {
             $0.id == targetTabID
@@ -1091,23 +1237,24 @@ final class AppModel: ObservableObject {
             if index > 0 { return paneIDs[index - 1] }
             return nil
         }
-        let folderTabs = terminalTabs.filter {
-            $0.folderURL.standardizedFileURL.path
-                == closingTab.folderURL.standardizedFileURL.path
+        let scopeTabs = terminalTabs.filter {
+            $0.ownerFolderURL == closingTab.ownerFolderURL
         }
-        let closingFolderTabIndex = folderTabs.firstIndex {
+        let closingScopeTabIndex = scopeTabs.firstIndex {
             $0.id == closingTab.id
         }
-        let replacementTabID = closingFolderTabIndex.flatMap { index -> UUID? in
-            if index + 1 < folderTabs.count { return folderTabs[index + 1].id }
-            if index > 0 { return folderTabs[index - 1].id }
+        let replacementTabID = closingScopeTabIndex.flatMap { index -> UUID? in
+            if index + 1 < scopeTabs.count { return scopeTabs[index + 1].id }
+            if index > 0 { return scopeTabs[index - 1].id }
             return nil
         }
-        let folderPath = closingTab.folderURL.standardizedFileURL.path
         if recordsForRestoration {
-            recentlyClosedTerminalFolderURLs.append(closingSession.folderURL)
-            if recentlyClosedTerminalFolderURLs.count > 20 {
-                recentlyClosedTerminalFolderURLs.removeFirst()
+            recentlyClosedTerminalLocations.append(ClosedTerminalLocation(
+                workingDirectoryURL: closingSession.workingDirectoryURL,
+                ownerFolderURL: closingTab.ownerFolderURL
+            ))
+            if recentlyClosedTerminalLocations.count > 20 {
+                recentlyClosedTerminalLocations.removeFirst()
             }
         }
         closingSession.terminal.onClose = nil
@@ -1125,24 +1272,29 @@ final class AppModel: ObservableObject {
             terminalTabs.remove(at: tabIndex)
         }
         terminalSessions.remove(at: sessionIndex)
-        if activeTerminalID == id {
-            if let replacementInTab {
-                activeTerminalID = replacementInTab
-            } else if let replacementTabID,
-                      let replacementTab = terminalTabs.first(where: {
-                          $0.id == replacementTabID
-                      }) {
-                activeTerminalID = replacementTab.focusedTerminalID
-            } else {
-                activeTerminalID = nil
-            }
+        if activeTabID == closingTab.id,
+           !terminalTabs.contains(where: { $0.id == closingTab.id }) {
+            activeTabID = replacementTabID ?? terminalTabs.last?.id
         }
-        if terminalTabs.contains(where: { $0.id == closingTab.id }) {
-            lastActiveTabIDByFolderPath[folderPath] = closingTab.id
-        } else if let replacementTabID {
-            lastActiveTabIDByFolderPath[folderPath] = replacementTabID
-        } else {
-            lastActiveTabIDByFolderPath.removeValue(forKey: folderPath)
+        if let folderURL = closingTab.ownerFolderURL {
+            let folderPath = folderURL.standardizedFileURL.path
+            let folderStillHasTabs = terminalTabs.contains {
+                $0.ownerFolderURL?.standardizedFileURL.path == folderPath
+            }
+            if !folderStillHasTabs {
+                lastActiveTabIDByFolderPath.removeValue(forKey: folderPath)
+                moveFolderToEndOfCurrentGroup(folderURL)
+            } else if lastActiveTabIDByFolderPath[folderPath]
+                == closingTab.id,
+                !terminalTabs.contains(where: { $0.id == closingTab.id }) {
+                lastActiveTabIDByFolderPath[folderPath] = replacementTabID
+            }
+        } else if lastActiveStandaloneTabID == closingTab.id,
+                  !terminalTabs.contains(where: { $0.id == closingTab.id }) {
+            lastActiveStandaloneTabID = replacementTabID
+        }
+        if terminalTabs.isEmpty {
+            closeWindowHandler?()
         }
 
         // AppKit may finish dismantling the old split containers after SwiftUI
@@ -1154,10 +1306,20 @@ final class AppModel: ObservableObject {
     }
 
     func restoreLastClosedTerminal() {
-        while let closedFolderURL = recentlyClosedTerminalFolderURLs.popLast() {
-            guard Self.validFolderURL(closedFolderURL) != nil,
-                  folderURL(containing: closedFolderURL) != nil else { continue }
-            openNewTerminal(for: closedFolderURL)
+        while let location = recentlyClosedTerminalLocations.popLast() {
+            guard Self.validFolderURL(location.workingDirectoryURL) != nil else {
+                continue
+            }
+            if let folderURL = location.ownerFolderURL {
+                guard self.folderURL(containing: folderURL) != nil else {
+                    continue
+                }
+                openNewTerminal(for: folderURL)
+            } else {
+                openStandaloneTerminal(
+                    workingDirectoryURL: location.workingDirectoryURL
+                )
+            }
             return
         }
     }
@@ -1357,7 +1519,7 @@ final class AppModel: ObservableObject {
     ) -> UUID? {
         let path = folderURL.standardizedFileURL.path
         let terminalIDs = terminalTabs
-            .filter { $0.folderURL.standardizedFileURL.path == path }
+            .filter { $0.ownerFolderURL?.standardizedFileURL.path == path }
             .flatMap(\.terminalIDs)
         return latestAgentAttentionTerminalID(in: terminalIDs)
     }
@@ -1379,13 +1541,8 @@ final class AppModel: ObservableObject {
         agentAttentionClearedHandler?(terminalID)
     }
 
-    private func persistFolderState() {
+    private func persistFolders() {
         defaults.set(folderURLs.map(\.path), forKey: Keys.folderPaths)
-        if let activeFolderURL {
-            defaults.set(activeFolderURL.path, forKey: Keys.activeFolderPath)
-        } else {
-            defaults.removeObject(forKey: Keys.activeFolderPath)
-        }
     }
 
     private func presentFolderAdditionFailures(
@@ -1447,23 +1604,8 @@ final class AppModel: ObservableObject {
         return folders
     }
 
-    private static func restoredActiveFolderURL(
-        from defaults: UserDefaults,
-        folders: [URL]
-    ) -> URL? {
-        guard let path = defaults.string(forKey: Keys.activeFolderPath),
-              let folderURL = validFolderURL(URL(fileURLWithPath: path)),
-              folders.contains(where: {
-                  $0.standardizedFileURL.path == folderURL.path
-              }) else {
-            return nil
-        }
-        return folderURL
-    }
-
     private enum Keys {
         static let folderPaths = "folders.paths.v1"
-        static let activeFolderPath = "folders.activePath.v1"
     }
 }
 
@@ -1473,19 +1615,38 @@ final class TerminalSession: ObservableObject, Identifiable {
         let processID: pid_t
         let parentProcessID: pid_t
         let processGroupID: pid_t
-        let ttyDevice: UInt64
+        let ttyDevice: UInt64?
+        let terminalForegroundProcessGroupID: pid_t
         let name: String
+
+        init(
+            processID: pid_t,
+            parentProcessID: pid_t,
+            processGroupID: pid_t,
+            ttyDevice: UInt64?,
+            terminalForegroundProcessGroupID: pid_t? = nil,
+            name: String
+        ) {
+            self.processID = processID
+            self.parentProcessID = parentProcessID
+            self.processGroupID = processGroupID
+            self.ttyDevice = ttyDevice
+            self.terminalForegroundProcessGroupID =
+                terminalForegroundProcessGroupID ?? processGroupID
+            self.name = name
+        }
     }
 
     private struct ProcessIdentitySnapshot {
         let processID: pid_t
         let parentProcessID: pid_t
         let processGroupID: pid_t
-        let ttyDevice: UInt64
+        let ttyDevice: UInt64?
+        let terminalForegroundProcessGroupID: pid_t
     }
 
     let id = UUID()
-    let folderURL: URL
+    let workingDirectoryURL: URL
     let terminal: TerminalViewState
     let defaultShellName: String
     var terminalView: TerminalView?
@@ -1498,14 +1659,14 @@ final class TerminalSession: ObservableObject, Identifiable {
     private static let processSnapshotCacheLifetime: TimeInterval = 0.2
 
     init(
-        folderURL: URL,
+        workingDirectoryURL: URL,
         settings: AppSettings? = nil,
         defaultShellPath: String? = nil,
         surfaceContext: TerminalSurfaceContext = .window,
         initialInput: String? = nil
     ) {
         let settings = settings ?? AppSettings()
-        self.folderURL = folderURL.standardizedFileURL
+        self.workingDirectoryURL = workingDirectoryURL.standardizedFileURL
         let shellPath = defaultShellPath ?? Self.loginShellPath
         defaultShellName = Self.processName(
             from: shellPath
@@ -1516,7 +1677,7 @@ final class TerminalSession: ObservableObject, Identifiable {
         )
         terminal.configuration = TerminalSurfaceOptions(
             backend: .exec,
-            workingDirectory: folderURL.path,
+            workingDirectory: workingDirectoryURL.path,
             context: surfaceContext
         )
         pendingInput = initialInput
@@ -1588,12 +1749,14 @@ final class TerminalSession: ObservableObject, Identifiable {
         terminalTitle: String,
         foregroundProcessName: String?
     ) -> String {
+        let processName = foregroundProcessName.flatMap(Self.processName(from:))
+        if processName == defaultShellName { return defaultShellName }
+
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty, !Self.isPathTitle(title) {
             return title
         }
-        guard let foregroundProcessName else { return defaultShellName }
-        return Self.processName(from: foregroundProcessName) ?? defaultShellName
+        return processName ?? defaultShellName
     }
 
     private static func isPathTitle(_ title: String) -> Bool {
@@ -1615,28 +1778,91 @@ final class TerminalSession: ObservableObject, Identifiable {
         }
         guard !candidates.isEmpty else { return nil }
 
-        if let leader = candidates.first(where: {
-            $0.processID == processGroupID
-        }), leader.name != "login" {
-            return leader
-        }
-
         let processByID = Dictionary(
             uniqueKeysWithValues: processes.map { ($0.processID, $0) }
         )
-        let usableCandidates = candidates.filter {
-            $0.name != "login"
-        }
-        guard let selected = usableCandidates.max(by: { lhs, rhs in
-            let lhsDepth = processDepth(lhs, processByID: processByID)
-            let rhsDepth = processDepth(rhs, processByID: processByID)
-            if lhsDepth == rhsDepth {
-                return lhs.processID < rhs.processID
+        let selected: ProcessSnapshot
+        if let leader = candidates.first(where: {
+            $0.processID == processGroupID
+        }), leader.name != "login", !leader.name.isEmpty {
+            selected = leader
+        } else {
+            let usableCandidates = candidates.filter {
+                $0.name != "login" && !$0.name.isEmpty
             }
-            return lhsDepth < rhsDepth
-        }) else { return nil }
+            guard let candidate = usableCandidates.max(by: { lhs, rhs in
+                let lhsDepth = processDepth(lhs, processByID: processByID)
+                let rhsDepth = processDepth(rhs, processByID: processByID)
+                if lhsDepth == rhsDepth {
+                    return lhs.processID < rhs.processID
+                }
+                return lhsDepth < rhsDepth
+            }) else { return nil }
+            selected = candidate
+        }
 
-        return selected
+        let nestedForegroundProcesses = processes.filter { process in
+            guard process.ttyDevice != nil,
+                  process.ttyDevice != ttyDevice,
+                  process.processGroupID
+                    == process.terminalForegroundProcessGroupID,
+                  !process.name.isEmpty
+            else { return false }
+            return isDescendant(
+                process,
+                of: selected.processID,
+                processByID: processByID
+            )
+        }
+
+        return nestedForegroundProcesses.max(by: { lhs, rhs in
+            let lhsDepth = foregroundGroupDepth(
+                lhs,
+                processByID: processByID
+            )
+            let rhsDepth = foregroundGroupDepth(
+                rhs,
+                processByID: processByID
+            )
+            if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
+
+            let sameGroup = lhs.ttyDevice == rhs.ttyDevice
+                && lhs.processGroupID == rhs.processGroupID
+            if sameGroup {
+                let lhsIsLeader = lhs.processID == lhs.processGroupID
+                    && lhs.name != "login"
+                let rhsIsLeader = rhs.processID == rhs.processGroupID
+                    && rhs.name != "login"
+                if lhsIsLeader != rhsIsLeader { return !lhsIsLeader }
+            }
+            return lhs.processID < rhs.processID
+        }) ?? selected
+    }
+
+    private static func foregroundGroupDepth(
+        _ process: ProcessSnapshot,
+        processByID: [pid_t: ProcessSnapshot]
+    ) -> Int {
+        let groupLeader = processByID[process.processGroupID] ?? process
+        return processDepth(groupLeader, processByID: processByID)
+    }
+
+    private static func isDescendant(
+        _ process: ProcessSnapshot,
+        of ancestorProcessID: pid_t,
+        processByID: [pid_t: ProcessSnapshot]
+    ) -> Bool {
+        var parentProcessID = process.parentProcessID
+        var visited = Set([process.processID])
+        while parentProcessID > 0, !visited.contains(parentProcessID) {
+            if parentProcessID == ancestorProcessID { return true }
+            visited.insert(parentProcessID)
+            guard let parent = processByID[parentProcessID] else {
+                return false
+            }
+            parentProcessID = parent.parentProcessID
+        }
+        return false
     }
 
     private static func processDepth(
@@ -1666,17 +1892,39 @@ final class TerminalSession: ObservableObject, Identifiable {
         processGroupID: pid_t,
         ttyDevice: UInt64
     ) -> [ProcessSnapshot] {
-        processIdentitySnapshots().compactMap { process in
-            guard process.processGroupID == processGroupID,
-                  process.ttyDevice == ttyDevice,
-                  let name = processName(for: UInt64(process.processID))
-            else { return nil }
+        let identities = processIdentitySnapshots()
+        let rootProcessIDs = identities.compactMap { process in
+            process.processGroupID == processGroupID
+                && process.ttyDevice == ttyDevice
+                ? process.processID
+                : nil
+        }
+        guard !rootProcessIDs.isEmpty else { return [] }
+
+        let childrenByParent = Dictionary(grouping: identities) {
+            $0.parentProcessID
+        }
+        var relevantProcessIDs = Set(rootProcessIDs)
+        var pendingProcessIDs = rootProcessIDs
+        while let parentProcessID = pendingProcessIDs.popLast() {
+            for child in childrenByParent[parentProcessID] ?? []
+            where relevantProcessIDs.insert(child.processID).inserted {
+                pendingProcessIDs.append(child.processID)
+            }
+        }
+
+        return identities.compactMap { process in
+            guard relevantProcessIDs.contains(process.processID) else {
+                return nil
+            }
             return ProcessSnapshot(
                 processID: process.processID,
                 parentProcessID: process.parentProcessID,
                 processGroupID: process.processGroupID,
                 ttyDevice: process.ttyDevice,
-                name: name
+                terminalForegroundProcessGroupID:
+                    process.terminalForegroundProcessGroupID,
+                name: processName(for: UInt64(process.processID)) ?? ""
             )
         }
     }
@@ -1718,12 +1966,13 @@ final class TerminalSession: ObservableObject, Identifiable {
             entry -> ProcessIdentitySnapshot? in
             let processID = entry.kp_proc.p_pid
             let ttyDevice = entry.kp_eproc.e_tdev
-            guard processID > 0, ttyDevice >= 0 else { return nil }
+            guard processID > 0 else { return nil }
             return ProcessIdentitySnapshot(
                 processID: processID,
                 parentProcessID: entry.kp_eproc.e_ppid,
                 processGroupID: entry.kp_eproc.e_pgid,
-                ttyDevice: UInt64(ttyDevice)
+                ttyDevice: ttyDevice >= 0 ? UInt64(ttyDevice) : nil,
+                terminalForegroundProcessGroupID: entry.kp_eproc.e_tpgid
             )
         }
         cachedProcessSnapshots = (now, snapshots)

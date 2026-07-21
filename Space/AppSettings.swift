@@ -162,7 +162,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 280)
         .preferredColorScheme(settings.appearance.colorScheme)
         .fileImporter(
             isPresented: $isConfigFileImporterPresented,

@@ -72,6 +72,16 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
         model?.clearVisibleAgentAttention()
     }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        if !flag {
+            model?.ensureTerminalTab()
+        }
+        return true
+    }
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
@@ -274,23 +284,21 @@ struct SpaceApp: App {
         let environment = ProcessInfo.processInfo.environment
         if let pathsValue = environment["SPACE_UI_TEST_FOLDER_PATHS"] {
             let paths = pathsValue.split(separator: "\n").map(String.init)
-            if let firstPath = paths.first {
-                let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"]
-                    ?? "SpaceUITests"
-                let defaults = UserDefaults(suiteName: suiteName) ?? .standard
-                defaults.removePersistentDomain(forName: suiteName)
-                let model = AppModel(
-                    defaults: defaults,
-                    initialFolderURL: URL(fileURLWithPath: firstPath)
+            let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"]
+                ?? "SpaceUITests"
+            let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+            defaults.removePersistentDomain(forName: suiteName)
+            let model = AppModel(
+                defaults: defaults,
+                initialFolderURL: paths.first.map(URL.init(fileURLWithPath:))
+            )
+            for path in paths.dropFirst() {
+                model.addFolder(
+                    URL(fileURLWithPath: path),
+                    activate: false
                 )
-                for path in paths.dropFirst() {
-                    model.addFolder(
-                        URL(fileURLWithPath: path),
-                        activate: false
-                    )
-                }
-                return model
             }
+            return model
         }
         #endif
         return AppModel()
@@ -303,7 +311,6 @@ struct SpaceApp: App {
             ) {
                 ContentView()
                     .environmentObject(model)
-                    .frame(minWidth: 820, minHeight: 540)
                     .onAppear {
                         appDelegate.installApplicationShortcutMonitor(
                             for: model
@@ -311,8 +318,7 @@ struct SpaceApp: App {
                     }
             }
         }
-        .defaultSize(width: 1_220, height: 780)
-        .windowToolbarStyle(.unifiedCompact)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Space") {
@@ -323,12 +329,9 @@ struct SpaceApp: App {
 
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
-                    if let folderURL = model.activeFolderURL {
-                        model.openNewTerminal(for: folderURL)
-                    }
+                    model.openNewTerminal()
                 }
                 .keyboardShortcut("t", modifiers: .command)
-                .disabled(model.activeFolderURL == nil)
 
                 Button("Add Folder…") {
                     model.chooseFolder()
@@ -411,7 +414,7 @@ struct SpaceApp: App {
                     model.toggleSidebar()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-                .disabled(model.folders.isEmpty)
+                .disabled(model.folders.isEmpty && model.terminalTabs.isEmpty)
 
                 Divider()
 
@@ -425,23 +428,23 @@ struct SpaceApp: App {
             }
 
             CommandGroup(before: .windowArrangement) {
-                Button("Previous Folder") {
-                    model.selectAdjacentFolder(offset: -1)
+                Button("Previous Tab Group") {
+                    model.selectAdjacentTabGroup(offset: -1)
                 }
                 .keyboardShortcut(
                     .leftArrow,
                     modifiers: [.command, .shift]
                 )
-                .disabled(model.folders.count < 2)
+                .disabled(model.tabGroupCount < 2)
 
-                Button("Next Folder") {
-                    model.selectAdjacentFolder(offset: 1)
+                Button("Next Tab Group") {
+                    model.selectAdjacentTabGroup(offset: 1)
                 }
                 .keyboardShortcut(
                     .rightArrow,
                     modifiers: [.command, .shift]
                 )
-                .disabled(model.folders.count < 2)
+                .disabled(model.tabGroupCount < 2)
 
                 Divider()
 
@@ -449,13 +452,13 @@ struct SpaceApp: App {
                     model.selectAdjacentTab(offset: -1)
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(model.activeFolderTabs.count < 2)
+                .disabled(model.activeScopeTabs.count < 2)
 
                 Button("Next Tab") {
                     model.selectAdjacentTab(offset: 1)
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(model.activeFolderTabs.count < 2)
+                .disabled(model.activeScopeTabs.count < 2)
 
                 Divider()
 

@@ -1,14 +1,10 @@
 import AppKit
+import GhosttyTerminal
 import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var windowWidth: CGFloat = 1_220
-
-    private var terminalTabStripMaximumWidth: CGFloat {
-        windowWidth * 2 / 3
-    }
 
     private var folderImporterIsPresented: Binding<Bool> {
         Binding(
@@ -37,90 +33,61 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
-        ZStack {
-            if model.folders.isEmpty {
-                EmptyFolderView()
-            } else {
-                HSplitView {
-                    if model.isSidebarVisible {
-                        FolderSidebar()
-                            .frame(minWidth: 160)
-                    }
-
-                    TerminalArea()
-                        .frame(
-                            minWidth: 560,
-                            maxWidth: .infinity,
-                            maxHeight: .infinity
-                        )
-                        .layoutPriority(1)
-                }
+    private var navigationSplitViewVisibility:
+        Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: {
+                model.isSidebarVisible ? .all : .detailOnly
+            },
+            set: { visibility in
+                model.setSidebarVisible(visibility != .detailOnly)
             }
+        )
+    }
+
+    private var navigationSplitViewContent: some View {
+        NavigationSplitView(
+            columnVisibility: navigationSplitViewVisibility
+        ) {
+            FolderSidebar()
+        } detail: {
+            TerminalArea()
+                .ignoresSafeArea(.container, edges: .top)
+        }
+    }
+
+    @ViewBuilder
+    private var navigationSplitView: some View {
+        if #available(macOS 15.0, *) {
+            navigationSplitViewContent
+                .windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            navigationSplitViewContent
+        }
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            navigationSplitView
 
             if let notice = model.memoSaveNotice {
                 MemoSaveToast(
                     message: notice.message,
                     systemImage: notice.systemImage
                 )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .task(id: notice.id) {
-                        try? await Task.sleep(for: .seconds(1.5))
-                        guard !Task.isCancelled else { return }
-                        model.dismissMemoSaveNotice(notice.id)
-                    }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .task(id: notice.id) {
+                    try? await Task.sleep(for: .seconds(1.5))
+                    guard !Task.isCancelled else { return }
+                    model.dismissMemoSaveNotice(notice.id)
+                }
             }
         }
         .animation(.easeOut(duration: 0.16), value: model.memoSaveNotice)
         .background(Color(nsColor: .windowBackgroundColor))
-        .navigationTitle("")
         .background(WindowConfigurator(
-            sidebarIsVisible: model.isSidebarVisible
+            model: model
         ))
-        .toolbar {
-            if !model.folders.isEmpty,
-               !model.activeFolderTabs.isEmpty {
-                if #available(macOS 26.0, *) {
-                    ToolbarItem(placement: .principal) {
-                        TerminalTitleBarContent(
-                            maximumTabStripWidth: terminalTabStripMaximumWidth
-                        )
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .principal) {
-                        TerminalTitleBarContent(
-                            maximumTabStripWidth: terminalTabStripMaximumWidth
-                        )
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-            }
-
-            ToolbarItemGroup(placement: .navigation) {
-                if !model.folders.isEmpty {
-                    Button {
-                        model.toggleSidebar()
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                    }
-                    .keyboardShortcut("s", modifiers: [.command, .option])
-                    .help(model.isSidebarVisible
-                        ? "Hide Sidebar (⌥⌘S)"
-                        : "Show Sidebar (⌥⌘S)")
-                    .accessibilityLabel(model.isSidebarVisible
-                        ? "Hide Sidebar"
-                        : "Show Sidebar")
-                }
-            }
-        }
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.width
-        } action: { width in
-            guard width > 0 else { return }
-            windowWidth = width
-        }
         .fileImporter(
             isPresented: folderImporterIsPresented,
             allowedContentTypes: [.folder],
@@ -168,6 +135,7 @@ struct ContentView: View {
             }
         )
     }
+
 }
 
 private struct MemoSaveToast: View {
@@ -178,7 +146,6 @@ private struct MemoSaveToast: View {
         Label(message, systemImage: systemImage)
             .font(.callout.weight(.medium))
             .padding(.horizontal, 12)
-            .frame(height: 32)
             .background(.regularMaterial, in: Capsule())
             .overlay {
                 Capsule()
@@ -186,7 +153,6 @@ private struct MemoSaveToast: View {
             }
             .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
             .padding(.bottom, 18)
-            .frame(maxHeight: .infinity, alignment: .bottom)
             .accessibilityIdentifier("memo-save-toast")
     }
 }
@@ -232,7 +198,6 @@ private struct TabRenameSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
         .onAppear {
             isNameFocused = true
         }
@@ -243,20 +208,32 @@ private struct TabRenameSheet: View {
     }
 }
 
+private enum SidebarSelection: Hashable {
+    case folder(String)
+    case tab(UUID)
+}
+
 private struct FolderSidebar: View {
     @EnvironmentObject private var model: AppModel
+    @State private var expandedFolderPaths: Set<String> = []
 
-    private var selection: Binding<String?> {
+    private var selection: Binding<SidebarSelection?> {
         Binding(
             get: {
-                model.activeFolderURL?.standardizedFileURL.path
+                model.activeTerminalTab.map { .tab($0.id) }
             },
-            set: { path in
-                guard let path,
-                      let folder = model.folders.first(where: {
-                          $0.id == path
-                      }) else { return }
-                model.activateFolder(folder.url)
+            set: { selection in
+                switch selection {
+                case let .folder(path):
+                    guard let folder = model.folders.first(where: {
+                        $0.id == path
+                    }) else { return }
+                    model.activateFolder(folder.url)
+                case let .tab(id):
+                    model.selectTab(id)
+                case nil:
+                    break
+                }
             }
         )
     }
@@ -272,9 +249,37 @@ private struct FolderSidebar: View {
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: selection) {
+                if !model.standaloneTabs.isEmpty {
+                    Section("Tabs") {
+                        ForEach(
+                            Array(model.standaloneTabs.enumerated()),
+                            id: \.element.id
+                        ) { index, tab in
+                            if let session = model.terminalSessions.first(
+                                where: { $0.id == tab.focusedTerminalID }
+                            ) {
+                                SidebarTerminalTabRow(
+                                    tab: tab,
+                                    session: session,
+                                    shortcutLabel: shortcutLabel(
+                                        at: index,
+                                        tabCount: model.standaloneTabs.count,
+                                        ownerFolderURL: nil
+                                    ),
+                                    accessibilityIdentifier:
+                                        "standalone-terminal-tab-row:"
+                                        + tab.id.uuidString
+                                )
+                                .tag(SidebarSelection.tab(tab.id))
+                                .id(sidebarTabID(tab.id))
+                            }
+                        }
+                    }
+                }
+
                 if !foldersWithTabs.wrappedValue.isEmpty {
                     Section {
-                        folderRows(foldersWithTabs)
+                        tabbedFolderRows(foldersWithTabs)
                     }
                 }
 
@@ -285,15 +290,61 @@ private struct FolderSidebar: View {
                 }
             }
             .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
+            .onAppear(perform: expandActiveFolder)
             .onChange(of: model.activeFolderURL) { _, url in
                 guard let url else { return }
+                expandedFolderPaths = [url.standardizedFileURL.path]
                 withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(url.standardizedFileURL.path, anchor: .center)
+                    proxy.scrollTo(
+                        sidebarItemID(for: url),
+                        anchor: .center
+                    )
                 }
             }
+            .onChange(of: model.activeTerminalTab?.id) { _, _ in
+                expandActiveFolder()
+            }
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private func tabbedFolderRows(
+        _ folders: Binding<[Folder]>
+    ) -> some View {
+        ForEach(folders, editActions: .move) { folder in
+            let value = folder.wrappedValue
+            let folderTabs = tabs(for: value)
+            DisclosureGroup(
+                isExpanded: expansionBinding(for: value)
+            ) {
+                ForEach(Array(folderTabs.enumerated()), id: \.element.id) {
+                    index, tab in
+                    if let session = model.terminalSessions.first(where: {
+                        $0.id == tab.focusedTerminalID
+                    }) {
+                        SidebarTerminalTabRow(
+                            tab: tab,
+                            session: session,
+                            shortcutLabel: shortcutLabel(
+                                at: index,
+                                tabCount: folderTabs.count,
+                                ownerFolderURL: value.url
+                            ),
+                            accessibilityIdentifier:
+                                "terminal-tab-row:" + tab.id.uuidString
+                        )
+                        .tag(SidebarSelection.tab(tab.id))
+                        .id(sidebarTabID(tab.id))
+                    }
+                }
+            } label: {
+                FolderRow(
+                    folder: value,
+                    parentPath: disambiguatingParentPath(for: value)
+                )
+            }
+            .tag(SidebarSelection.folder(value.id))
+            .id(sidebarItemID(for: value.url))
+        }
     }
 
     private func groupedFolders(
@@ -305,7 +356,7 @@ private struct FolderSidebar: View {
             },
             set: { reorderedFolders in
                 var reordered = reorderedFolders.makeIterator()
-                let allFolders = model.folders.map { folder in
+                let allFolders = model.foldersInSidebarOrder.map { folder in
                     guard model.folderHasTabs(folder) == hasTabs
                     else { return folder }
                     return reordered.next() ?? folder
@@ -325,9 +376,60 @@ private struct FolderSidebar: View {
                     for: folder.wrappedValue
                 )
             )
-            .tag(folder.wrappedValue.id)
-            .id(folder.wrappedValue.id)
+            .tag(SidebarSelection.folder(folder.wrappedValue.id))
+            .id(sidebarItemID(for: folder.wrappedValue.url))
         }
+    }
+
+    private func tabs(for folder: Folder) -> [TerminalTabState] {
+        let path = folder.url.standardizedFileURL.path
+        return model.terminalTabs.filter {
+            $0.ownerFolderURL?.standardizedFileURL.path == path
+        }
+    }
+
+    private func expansionBinding(for folder: Folder) -> Binding<Bool> {
+        let path = folder.url.standardizedFileURL.path
+        return Binding(
+            get: { expandedFolderPaths.contains(path) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedFolderPaths.insert(path)
+                } else {
+                    expandedFolderPaths.remove(path)
+                }
+            }
+        )
+    }
+
+    private func expandActiveFolder() {
+        guard let path = model.activeFolderURL?.standardizedFileURL.path,
+              model.activeTerminalTab != nil else { return }
+        expandedFolderPaths.insert(path)
+    }
+
+    private func shortcutLabel(
+        at index: Int,
+        tabCount: Int,
+        ownerFolderURL: URL?
+    ) -> String? {
+        guard let activeTab = model.activeTerminalTab else { return nil }
+        let activeOwnerPath = activeTab.ownerFolderURL?
+            .standardizedFileURL.path
+        let ownerPath = ownerFolderURL?.standardizedFileURL.path
+        guard activeOwnerPath == ownerPath else { return nil }
+
+        if index < 8 { return "⌘\(index + 1)" }
+        if index == tabCount - 1 { return "⌘9" }
+        return nil
+    }
+
+    private func sidebarItemID(for url: URL) -> String {
+        "folder:\(url.standardizedFileURL.path)"
+    }
+
+    private func sidebarTabID(_ id: UUID) -> String {
+        "tab:\(id.uuidString)"
     }
 
     private func disambiguatingParentPath(
@@ -380,12 +482,7 @@ private struct FolderRow: View {
                 HStack(spacing: 4) {
                     if let terminalActivityFrame {
                         Text(terminalActivityFrame)
-                            .font(.system(
-                                size: 12,
-                                weight: .semibold,
-                                design: .monospaced
-                            ))
-                            .frame(width: 10)
+                            .font(.caption.weight(.semibold).monospaced())
                     }
 
                     Text(folder.displayName)
@@ -407,18 +504,12 @@ private struct FolderRow: View {
             if needsAgentAttention {
                 Circle()
                     .fill(.orange)
-                    .frame(width: 7, height: 7)
                     .accessibilityLabel("Agent needs attention")
                     .accessibilityIdentifier(
                         "agent-attention-folder:\(folderPath)"
                     )
             }
         }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: parentPath == nil ? 24 : 36,
-            alignment: .leading
-        )
         .contentShape(Rectangle())
         .help(folder.url.path)
         .accessibilityElement(children: .combine)
@@ -430,6 +521,12 @@ private struct FolderRow: View {
             "folder-row:\(folderPath)"
         )
         .contextMenu {
+            Button("New Tab") {
+                model.openNewTerminal(for: folder.url)
+            }
+
+            Divider()
+
             Button("Reveal in Finder") {
                 _ = NSWorkspace.shared.open(folder.url)
             }
@@ -443,31 +540,118 @@ private struct FolderRow: View {
     }
 }
 
-private struct EmptyFolderView: View {
+private struct SidebarTerminalTabRow: View {
     @EnvironmentObject private var model: AppModel
+    let tab: TerminalTabState
+    @ObservedObject var session: TerminalSession
+    @ObservedObject private var terminal: TerminalViewState
+    let shortcutLabel: String?
+    let accessibilityIdentifier: String
+    @State private var foregroundProcessName: String?
+    @State private var isHovering = false
+
+    init(
+        tab: TerminalTabState,
+        session: TerminalSession,
+        shortcutLabel: String?,
+        accessibilityIdentifier: String
+    ) {
+        self.tab = tab
+        _session = ObservedObject(wrappedValue: session)
+        _terminal = ObservedObject(wrappedValue: session.terminal)
+        self.shortcutLabel = shortcutLabel
+        self.accessibilityIdentifier = accessibilityIdentifier
+        _foregroundProcessName = State(initialValue: session.currentProcessName)
+    }
+
+    private var title: String {
+        tab.displayTitle(
+            automaticTitle: session.displayTitle(
+                terminalTitle: terminal.title,
+                foregroundProcessName: foregroundProcessName
+            )
+        )
+    }
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "folder.badge.plus")
-                .font(.system(size: 42, weight: .light))
+        HStack(spacing: 6) {
+            Button {
+                model.requestCloseTab(tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.semibold))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Close Tab")
+            .accessibilityLabel("Close tab \(title)")
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+
+            Image(systemName: "terminal")
                 .foregroundStyle(.secondary)
 
-            Text("No Folders")
-                .font(.title2.weight(.semibold))
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
-            Button("Add Folder…") {
-                model.chooseFolder()
+            if model.tabNeedsAgentAttention(tab.id) {
+                Image(systemName: "circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Agent needs attention")
+                    .accessibilityIdentifier(
+                        "agent-attention-tab:\(tab.id.uuidString)"
+                    )
             }
-            .controlSize(.large)
+
+            Spacer(minLength: 4)
+
+            if let shortcutLabel {
+                Text(shortcutLabel)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
-        .multilineTextAlignment(.center)
-        .padding(40)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityValue(
+            model.activeTerminalTab?.id == tab.id ? "Selected" : ""
+        )
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .onHover { isHovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
+        .draggable(tab.id.uuidString)
+        .dropDestination(for: String.self) { values, _ in
+            guard let value = values.first,
+                  let sourceID = UUID(uuidString: value) else { return false }
+            model.moveTab(sourceID, to: tab.id)
+            return true
+        }
+        .onTapGesture {
+            model.selectTab(tab.id)
+        }
+        .contextMenu {
+            Button("Rename Tab…") {
+                model.promptRenameTab(tab.id)
+            }
+            Button("Close Tab") {
+                model.requestCloseTab(tab.id)
+            }
+        }
+        .task {
+            while !Task.isCancelled {
+                foregroundProcessName = session.currentProcessName
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
     }
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
-    let sidebarIsVisible: Bool
+    let model: AppModel
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
@@ -480,13 +664,14 @@ private struct WindowConfigurator: NSViewRepresentable {
     }
 
     private func configureWindow(for view: NSView) {
-        _ = sidebarIsVisible
         DispatchQueue.main.async { [weak view] in
             guard let window = view?.window else { return }
-            window.setFrameAutosaveName("Space.MainWindow")
             window.tabbingMode = .disallowed
-            window.title = ""
-            window.titleVisibility = .hidden
+            model.closeWindowHandler = { [weak window] in
+                DispatchQueue.main.async { [weak window] in
+                    window?.performClose(nil)
+                }
+            }
         }
     }
 }
@@ -494,5 +679,4 @@ private struct WindowConfigurator: NSViewRepresentable {
 #Preview {
     ContentView()
         .environmentObject(AppModel())
-        .frame(width: 1_100, height: 720)
 }

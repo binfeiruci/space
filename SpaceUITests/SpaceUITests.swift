@@ -5,6 +5,7 @@
 //  Created by bfrc on 2026/7/15.
 //
 
+import AppKit
 import Carbon
 import XCTest
 
@@ -19,7 +20,7 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testNewSplitsDivideTheActivePaneEvenly() throws {
+    func testNewSplitsCreateExpectedPanes() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
@@ -38,93 +39,134 @@ final class SpaceUITests: XCTestCase {
         let paneCount = NSPredicate { _, _ in panes.count == 6 }
         expectation(for: paneCount, evaluatedWith: nil)
         waitForExpectations(timeout: 3)
-
-        let terminalTitle = app.staticTexts["terminal-title"]
-        XCTAssertTrue(terminalTitle.exists)
-        let windowFrame = app.windows.firstMatch.frame
-        let contentFrame = CGRect(
-            x: windowFrame.minX,
-            y: terminalTitle.frame.maxY,
-            width: windowFrame.width,
-            height: windowFrame.maxY - terminalTitle.frame.maxY
-        )
-        let frames = (0 ..< panes.count)
-            .map { panes.element(boundBy: $0).frame.intersection(contentFrame) }
-        let frameDescription = "frames=\(frames)"
-        let widths = frames.map(\.width)
-        let heights = frames.map(\.height).sorted()
-        XCTAssertEqual(
-            widths.min() ?? 0,
-            widths.max() ?? 0,
-            accuracy: 12,
-            frameDescription
-        )
-        XCTAssertEqual(
-            heights[0],
-            heights[2],
-            accuracy: 12,
-            frameDescription
-        )
-        XCTAssertEqual(
-            heights[3],
-            heights[5],
-            accuracy: 12,
-            frameDescription
-        )
-
     }
 
     @MainActor
-    func testTerminalTabsAppearOnlyWhenThereAreMultipleTabs() throws {
+    func testNewTabCreatesAStandaloneSidebarTab() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
-        let terminalTitle = app.staticTexts["terminal-title"]
-        let tabContainer = app.descendants(matching: .any)[
-            "terminal-tabs-container"
-        ]
-        XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
-        XCTAssertFalse(tabContainer.exists)
-        XCTAssertFalse(app.buttons["new-terminal-tab-button"].exists)
+        let folderTabRows = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        )
+        let firstTabAppears = NSPredicate { _, _ in folderTabRows.count == 1 }
+        expectation(for: firstTabAppears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
 
         app.typeKey("t", modifierFlags: .command)
 
-        XCTAssertTrue(tabContainer.waitForExistence(timeout: 3))
-        XCTAssertFalse(terminalTitle.exists)
-        XCTAssertTrue(app.buttons["new-terminal-tab-button"].exists)
-
-        let windowWidth = app.windows.firstMatch.frame.width
-        let initialWidth = tabContainer.frame.width
-
-        for _ in 0 ..< 7 {
-            app.typeKey("t", modifierFlags: .command)
-        }
-
-        let tabFrame = tabContainer.frame
-        let widthRatio = tabFrame.width / windowWidth
-        XCTAssertGreaterThanOrEqual(tabFrame.height, 20)
-        XCTAssertGreaterThan(tabFrame.width, initialWidth)
-        XCTAssertLessThanOrEqual(
-            widthRatio,
-            2.0 / 3.0 + 0.02,
-            "The tab bar should not exceed two-thirds of the window width"
+        let standaloneTabRows = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
         )
-
+        let standaloneTabAppears = NSPredicate {
+            _, _ in standaloneTabRows.count == 1
+        }
+        expectation(for: standaloneTabAppears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+        XCTAssertEqual(folderTabRows.count, 1)
+        XCTAssertFalse(app.staticTexts["terminal-title"].exists)
     }
 
     @MainActor
-    func testDoubleClickingTerminalTitlePresentsRenameTabSheet() throws {
+    func testSidebarTabsSwitchReliablyOnClick() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
-        let terminalTitle = app.staticTexts["terminal-title"]
-        XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
+        let folderTab = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        ).firstMatch
+        XCTAssertTrue(folderTab.waitForExistence(timeout: 3))
+        app.typeKey("t", modifierFlags: .command)
+        let standaloneTab = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        ).firstMatch
+        XCTAssertTrue(standaloneTab.waitForExistence(timeout: 3))
 
-        terminalTitle.doubleClick()
+        for _ in 0 ..< 5 {
+            folderTab.click()
+            XCTAssertEqual(folderTab.value as? String, "Selected")
+            standaloneTab.click()
+            XCTAssertEqual(standaloneTab.value as? String, "Selected")
+        }
+    }
 
-        XCTAssertTrue(
-            app.staticTexts["Rename Tab"].waitForExistence(timeout: 3)
+    @MainActor
+    func testFirstLaunchCreatesAStandaloneHomeTab() throws {
+        let (app, _) = try launchIsolatedApp(folderNames: [])
+        defer { app.terminate() }
+
+        let standaloneTab = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        ).firstMatch
+        XCTAssertTrue(standaloneTab.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.staticTexts["No Tabs"].exists)
+    }
+
+    @MainActor
+    func testReopeningAfterClosingLastTabCreatesANewTab() throws {
+        let (app, _) = try launchIsolatedApp(folderNames: [])
+        defer { app.terminate() }
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
+        let runningApplication = try XCTUnwrap(
+            NSRunningApplication.runningApplications(
+                withBundleIdentifier: "bfrc.Space"
+            ).first
         )
+        let applicationURL = try XCTUnwrap(runningApplication.bundleURL)
+
+        let tab = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        ).firstMatch
+        XCTAssertTrue(tab.waitForExistence(timeout: 3))
+        tab.rightClick()
+        let closeTabItem = app.menuItems["Close Tab"]
+        XCTAssertTrue(closeTabItem.waitForExistence(timeout: 3))
+        closeTabItem.click()
+        let confirmCloseButton = app.sheets.buttons["Close Tab"]
+        XCTAssertTrue(confirmCloseButton.waitForExistence(timeout: 3))
+        confirmCloseButton.click()
+
+        let windowClosed = NSPredicate { _, _ in !window.exists }
+        expectation(for: windowClosed, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+
+        let reopenFinished = expectation(description: "Application reopened")
+        NSWorkspace.shared.openApplication(
+            at: applicationURL,
+            configuration: .init()
+        ) { _, error in
+            XCTAssertNil(error)
+            reopenFinished.fulfill()
+        }
+        waitForExpectations(timeout: 3)
+        let reopenedWindow = app.windows.firstMatch
+        XCTAssertTrue(reopenedWindow.waitForExistence(timeout: 3))
+        let reopenedTab = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "standalone-terminal-tab-row:"
+            )
+        ).firstMatch
+        XCTAssertTrue(reopenedTab.waitForExistence(timeout: 3))
     }
 
     @MainActor
@@ -154,8 +196,10 @@ final class SpaceUITests: XCTestCase {
         defer {
             _ = TISSelectInputSource(previousInputSource)
         }
-        let terminalTitle = app.staticTexts["terminal-title"]
-        XCTAssertTrue(terminalTitle.waitForExistence(timeout: 3))
+        let terminalPane = app.descendants(matching: .any)[
+            "terminal-split-pane"
+        ]
+        XCTAssertTrue(terminalPane.waitForExistence(timeout: 3))
         app.typeText(
             "for i in {1..15}; do printf '\\033]0;%s\\007' \"$i\"; "
                 + "sleep 0.2; done"
@@ -270,25 +314,31 @@ final class SpaceUITests: XCTestCase {
 
         app.typeKey("f", modifierFlags: .command)
 
-        let searchField = app.textFields["terminal-search-field"]
+        let searchField = app.searchFields["terminal-search-field"]
         XCTAssertTrue(searchField.waitForExistence(timeout: 3))
+        XCTAssertGreaterThan(searchField.frame.width, 150)
+        let searchBar = app.descendants(matching: .any)["terminal-search-bar"]
+        XCTAssertTrue(searchBar.waitForExistence(timeout: 3))
+        XCTAssertLessThan(searchBar.frame.height, 60)
         app.typeText("needle")
         XCTAssertEqual(searchField.value as? String, "needle")
     }
 
     @MainActor
-    func testTogglingSidebarDoesNotRestoreWindowTitle() throws {
+    func testTerminalUsesHiddenTitleBarSpace() throws {
         let (app, _) = try launchIsolatedApp()
         defer { app.terminate() }
 
-        let applicationTitle = app.staticTexts["Space"]
-        XCTAssertFalse(applicationTitle.exists)
-
-        app.typeKey("s", modifierFlags: [.command, .option])
-        XCTAssertFalse(applicationTitle.exists)
-
-        app.typeKey("s", modifierFlags: [.command, .option])
-        XCTAssertFalse(applicationTitle.exists)
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 3))
+        let terminalPane = app.descendants(matching: .any)[
+            "terminal-split-pane"
+        ]
+        XCTAssertTrue(terminalPane.waitForExistence(timeout: 3))
+        XCTAssertLessThanOrEqual(
+            terminalPane.frame.minY - window.frame.minY,
+            2
+        )
     }
 
     @MainActor

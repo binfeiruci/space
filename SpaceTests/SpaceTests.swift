@@ -9,14 +9,14 @@ private extension AppModel {
         guard let activeFolderURL else { return [] }
         let activePath = activeFolderURL.standardizedFileURL.path
         return terminalSessions.filter {
-            $0.folderURL.standardizedFileURL.path == activePath
+            $0.workingDirectoryURL.standardizedFileURL.path == activePath
         }
     }
 
     func terminalSessionCount(in folderURL: URL) -> Int {
         let path = folderURL.standardizedFileURL.path
         return terminalSessions.count {
-            $0.folderURL.standardizedFileURL.path == path
+            $0.workingDirectoryURL.standardizedFileURL.path == path
         }
     }
 
@@ -184,7 +184,7 @@ struct SpaceTests {
             defaults: isolatedDefaults(scope: directory)
         )
         let session = TerminalSession(
-            folderURL: directory,
+            workingDirectoryURL: directory,
             settings: settings
         )
 
@@ -388,7 +388,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func appStartsWithoutDefaultFolder() {
+    func appStartsWithStandaloneHomeTabWithoutAddingFolder() throws {
         defer { removeIsolatedDefaults() }
         let defaults = isolatedDefaults(
             scope: FileManager.default.homeDirectoryForCurrentUser
@@ -398,12 +398,107 @@ struct SpaceTests {
 
         #expect(model.folderURLs.isEmpty)
         #expect(model.activeFolderURL == nil)
-        #expect(model.terminalSessions.isEmpty)
-        #expect(model.activeTerminalSession == nil)
+        let tab = try #require(model.activeTerminalTab)
+        let session = try #require(model.activeTerminalSession)
+        #expect(tab.ownerFolderURL == nil)
+        #expect(model.standaloneTabs.map(\.id) == [tab.id])
+        #expect(
+            session.workingDirectoryURL
+                == FileManager.default.homeDirectoryForCurrentUser
+                    .standardizedFileURL
+        )
+
+        model.closeTerminal(session.id, recordsForRestoration: false)
     }
 
     @Test @MainActor
-    func savedFoldersRestoreWithoutAddingHome() throws {
+    func reopeningWithoutTabsCreatesOneStandaloneHomeTab() throws {
+        defer { removeIsolatedDefaults() }
+        let defaults = isolatedDefaults(
+            scope: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let model = AppModel(defaults: defaults)
+        let initialTerminalID = try #require(model.activeTerminalID)
+        model.closeTerminal(
+            initialTerminalID,
+            recordsForRestoration: false
+        )
+
+        model.ensureTerminalTab()
+        model.ensureTerminalTab()
+
+        let session = try #require(model.activeTerminalSession)
+        #expect(model.terminalTabs.count == 1)
+        #expect(model.standaloneTabs.count == 1)
+        #expect(model.folderURLs.isEmpty)
+        #expect(
+            session.workingDirectoryURL
+                == FileManager.default.homeDirectoryForCurrentUser
+                    .standardizedFileURL
+        )
+
+        model.closeTerminal(session.id, recordsForRestoration: false)
+    }
+
+    @Test @MainActor
+    func newStandaloneTabUsesHomeWithoutAddingItAsAFolder() throws {
+        defer { removeIsolatedDefaults() }
+        let defaults = isolatedDefaults(
+            scope: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let model = AppModel(defaults: defaults)
+        let initialTabID = try #require(model.activeTabID)
+
+        model.openNewTerminal()
+
+        let tab = try #require(model.activeTerminalTab)
+        let session = try #require(model.activeTerminalSession)
+        #expect(tab.ownerFolderURL == nil)
+        #expect(model.standaloneTabs.map(\.id) == [initialTabID, tab.id])
+        #expect(model.activeScopeTabs.map(\.id) == [initialTabID, tab.id])
+        #expect(model.activeFolderURL == nil)
+        #expect(model.folderURLs.isEmpty)
+        #expect(
+            session.workingDirectoryURL
+                == FileManager.default.homeDirectoryForCurrentUser
+                    .standardizedFileURL
+        )
+
+        model.closeTerminal(session.id, recordsForRestoration: false)
+        if let initialTerminalID = model.activeTerminalID {
+            model.closeTerminal(
+                initialTerminalID,
+                recordsForRestoration: false
+            )
+        }
+    }
+
+    @Test @MainActor
+    func removingHomeFolderKeepsStandaloneHomeTab() throws {
+        defer { removeIsolatedDefaults() }
+        let defaults = isolatedDefaults(
+            scope: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let model = AppModel(defaults: defaults, initialFolderURL: home)
+        let folderTabID = try #require(model.activeTerminalTab?.id)
+
+        model.openNewTerminal()
+        let standaloneTabID = try #require(model.activeTerminalTab?.id)
+        model.removeFolder(home)
+
+        #expect(model.folderURLs.isEmpty)
+        #expect(model.terminalTabs.map(\.id) == [standaloneTabID])
+        #expect(!model.terminalTabs.contains { $0.id == folderTabID })
+        #expect(model.activeTerminalTab?.id == standaloneTabID)
+
+        if let terminalID = model.activeTerminalID {
+            model.closeTerminal(terminalID, recordsForRestoration: false)
+        }
+    }
+
+    @Test @MainActor
+    func savedFoldersRestoreWithStandaloneHomeTab() throws {
         defer { removeIsolatedDefaults() }
         let home = try temporaryDirectory()
         let saved = home.appendingPathComponent("Saved", isDirectory: true)
@@ -417,24 +512,26 @@ struct SpaceTests {
             [saved.path],
             forKey: "folders.paths.v1"
         )
-        defaults.set(
-            saved.path,
-            forKey: "folders.activePath.v1"
-        )
-
         var model: AppModel? = AppModel(defaults: defaults)
         #expect(model?.folderURLs == [saved])
-        #expect(model?.activeFolderURL == saved.standardizedFileURL)
+        #expect(model?.activeFolderURL == nil)
+        #expect(model?.standaloneTabs.count == 1)
+        #expect(
+            model?.activeTerminalSession?.workingDirectoryURL
+                == FileManager.default.homeDirectoryForCurrentUser
+                    .standardizedFileURL
+        )
 
         model = nil
 
         let restored = AppModel(defaults: defaults)
         #expect(restored.folderURLs == [saved])
-        #expect(restored.activeFolderURL == saved.standardizedFileURL)
+        #expect(restored.activeFolderURL == nil)
+        #expect(restored.standaloneTabs.count == 1)
     }
 
     @Test @MainActor
-    func independentFoldersPersistAndRestoreLastActiveFolder() throws {
+    func independentFoldersPersistAndRestoreWithStandaloneTab() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         let first = container.appendingPathComponent("First", isDirectory: true)
@@ -459,9 +556,14 @@ struct SpaceTests {
 
         let restored = AppModel(defaults: defaults)
         #expect(restored.folderURLs == [first, second])
-        #expect(restored.activeFolderURL == second)
+        #expect(restored.activeFolderURL == nil)
         #expect(restored.terminalSessions.count == 1)
-        #expect(restored.activeTerminalSession?.folderURL == second)
+        #expect(restored.standaloneTabs.count == 1)
+        #expect(
+            restored.activeTerminalSession?.workingDirectoryURL
+                == FileManager.default.homeDirectoryForCurrentUser
+                    .standardizedFileURL
+        )
     }
 
     @Test @MainActor
@@ -501,7 +603,8 @@ struct SpaceTests {
         #expect(restored.folderURLs == [
             directories[2], directories[0], directories[1],
         ])
-        #expect(restored.activeFolderURL == directories[2])
+        #expect(restored.activeFolderURL == nil)
+        #expect(restored.standaloneTabs.count == 1)
     }
 
     @Test @MainActor
@@ -538,14 +641,72 @@ struct SpaceTests {
         ])
 
         model.selectTerminal(firstTerminalID)
-        #expect(model.selectAdjacentFolder(offset: 1))
+        #expect(model.selectAdjacentTabGroup(offset: 1))
         #expect(model.activeFolderURL == third)
 
         model.closeTerminal(firstTerminalID)
 
         #expect(model.folderURLs == [first, second, third])
         #expect(model.foldersWithTabs.map(\.url) == [third])
-        #expect(model.foldersWithoutTabs.map(\.url) == [first, second])
+        #expect(model.foldersWithoutTabs.map(\.url) == [second, first])
+        #expect(model.foldersInSidebarOrder.map(\.url) == [
+            third, second, first,
+        ])
+    }
+
+    @Test @MainActor
+    func folderOpeningFirstTabMovesWithoutPersistingRuntimeOrder() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        let directories = ["First", "Second", "Third"].map {
+            container.appendingPathComponent($0, isDirectory: true)
+        }
+        for directory in directories {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: container) }
+        let defaults = isolatedDefaults(scope: container)
+        let model = AppModel(
+            defaults: defaults,
+            initialFolderURL: directories[0]
+        )
+        #expect(model.addFolder(directories[1], activate: false)
+            == .added(directories[1]))
+        #expect(model.addFolder(directories[2], activate: false)
+            == .added(directories[2]))
+        model.activateFolder(directories[2])
+
+        let foldersByURL = Dictionary(
+            uniqueKeysWithValues: model.folders.map { ($0.url, $0) }
+        )
+        model.setFolderOrder([
+            try #require(foldersByURL[directories[1]]),
+            try #require(foldersByURL[directories[0]]),
+            try #require(foldersByURL[directories[2]]),
+        ])
+
+        model.activateFolder(directories[1])
+
+        #expect(model.foldersWithTabs.map(\.url) == [
+            directories[0], directories[2], directories[1],
+        ])
+        #expect(model.folderURLs == [
+            directories[1], directories[0], directories[2],
+        ])
+        #expect(model.foldersInSidebarOrder.map(\.url) == [
+            directories[0], directories[2], directories[1],
+        ])
+
+        let restored = AppModel(defaults: defaults)
+        #expect(restored.folderURLs == [
+            directories[1], directories[0], directories[2],
+        ])
+        #expect(restored.foldersInSidebarOrder.map(\.url) == [
+            directories[1], directories[0], directories[2],
+        ])
     }
 
     @Test @MainActor
@@ -608,7 +769,8 @@ struct SpaceTests {
 
         let restored = AppModel(defaults: defaults)
         #expect(restored.folderURLs == [first])
-        #expect(restored.activeFolderURL == first)
+        #expect(restored.activeFolderURL == nil)
+        #expect(restored.standaloneTabs.count == 1)
     }
 
     @Test @MainActor
@@ -639,7 +801,10 @@ struct SpaceTests {
         model.activateFolder(second)
         #expect(model.activeTerminalID == firstID)
         #expect(model.terminalSessions.count == sessionCount)
-        #expect(model.activeTerminalSession?.folderURL == folder.standardizedFileURL)
+        #expect(
+            model.activeTerminalSession?.workingDirectoryURL
+                == folder.standardizedFileURL
+        )
 
         model.activateFolder(first)
         #expect(model.activeTerminalID == firstID)
@@ -666,7 +831,10 @@ struct SpaceTests {
 
         #expect(model.activeTerminalID != firstID)
         #expect(model.terminalSessionCount(in: folder) == 2)
-        #expect(model.activeTerminalSession?.folderURL == folder.standardizedFileURL)
+        #expect(
+            model.activeTerminalSession?.workingDirectoryURL
+                == folder.standardizedFileURL
+        )
         #expect(model.activeFolderSessions.count == 2)
         model.selectTerminal(firstID)
         #expect(model.activeTerminalID == firstID)
@@ -681,7 +849,7 @@ struct SpaceTests {
             defaults: isolatedDefaults(scope: directory)
         )
         let session = TerminalSession(
-            folderURL: directory,
+            workingDirectoryURL: directory,
             settings: settings,
             defaultShellPath: "/bin/zsh"
         )
@@ -702,15 +870,98 @@ struct SpaceTests {
             terminalTitle: "  ",
             foregroundProcessName: nil
         ) == "zsh")
+        #expect(session.displayTitle(
+            terminalTitle: "decorated shell title",
+            foregroundProcessName: "/bin/zsh"
+        ) == "zsh")
         var tab = TerminalTabState(
             id: session.id,
-            folderURL: directory,
+            ownerFolderURL: directory,
             root: .pane(session.id),
             focusedTerminalID: session.id
         )
         #expect(tab.displayTitle(automaticTitle: "top") == "top")
         tab.customTitle = "server"
         #expect(tab.displayTitle(automaticTitle: "top") == "server")
+    }
+
+    @Test @MainActor
+    func foregroundProcessResolverFollowsNestedPTY() throws {
+        let wrapper = TerminalSession.ProcessSnapshot(
+            processID: 100,
+            parentProcessID: 1,
+            processGroupID: 100,
+            ttyDevice: 7,
+            terminalForegroundProcessGroupID: 100,
+            name: "pty-wrapper"
+        )
+        let bridge = TerminalSession.ProcessSnapshot(
+            processID: 101,
+            parentProcessID: 100,
+            processGroupID: 101,
+            ttyDevice: nil,
+            terminalForegroundProcessGroupID: 0,
+            name: "bridge"
+        )
+        let idleShell = TerminalSession.ProcessSnapshot(
+            processID: 102,
+            parentProcessID: 101,
+            processGroupID: 102,
+            ttyDevice: 8,
+            terminalForegroundProcessGroupID: 102,
+            name: "zsh"
+        )
+
+        let idleProcess = try #require(
+            TerminalSession.resolveForegroundProcess(
+                processGroupID: 100,
+                ttyDevice: 7,
+                processes: [wrapper, bridge, idleShell]
+            )
+        )
+        #expect(idleProcess.processID == 102)
+        #expect(idleProcess.name == "zsh")
+
+        let waitingShell = TerminalSession.ProcessSnapshot(
+            processID: 102,
+            parentProcessID: 101,
+            processGroupID: 102,
+            ttyDevice: 8,
+            terminalForegroundProcessGroupID: 103,
+            name: "zsh"
+        )
+        let top = TerminalSession.ProcessSnapshot(
+            processID: 103,
+            parentProcessID: 102,
+            processGroupID: 103,
+            ttyDevice: 8,
+            terminalForegroundProcessGroupID: 103,
+            name: "top"
+        )
+        let backgroundProcess = TerminalSession.ProcessSnapshot(
+            processID: 104,
+            parentProcessID: 102,
+            processGroupID: 104,
+            ttyDevice: 8,
+            terminalForegroundProcessGroupID: 103,
+            name: "server"
+        )
+
+        let runningProcess = try #require(
+            TerminalSession.resolveForegroundProcess(
+                processGroupID: 100,
+                ttyDevice: 7,
+                processes: [
+                    wrapper,
+                    bridge,
+                    waitingShell,
+                    top,
+                    backgroundProcess,
+                ]
+            )
+        )
+        #expect(runningProcess.processID == 103)
+        #expect(runningProcess.name == "top")
     }
 
     @Test @MainActor
@@ -840,7 +1091,7 @@ struct SpaceTests {
         )
         model.openNewTerminal(for: folder)
         let secondTabID = try #require(model.activeTerminalID)
-        let firstTabID = try #require(model.activeFolderTabs.first?.id)
+        let firstTabID = try #require(model.activeScopeTabs.first?.id)
         model.selectTab(firstTabID)
         let expectedID = try #require(model.activeTerminalID)
         #expect(expectedID != secondTabID)
@@ -873,6 +1124,42 @@ struct SpaceTests {
 
         #expect(model.activeTerminalID == firstID)
         #expect(model.terminalSessionCount(in: folder) == 1)
+    }
+
+    @Test @MainActor
+    func closingInactiveTabPreservesLastActiveTabInFolder() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let folder = container.appendingPathComponent(
+            "folder",
+            isDirectory: true
+        )
+        let other = container.appendingPathComponent(
+            "other",
+            isDirectory: true
+        )
+        for directory in [folder, other] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: container),
+            initialFolderURL: folder
+        )
+        let firstTabID = try #require(model.activeTabID)
+        model.openNewTerminal(for: folder)
+        let secondTabID = try #require(model.activeTabID)
+        model.openNewTerminal(for: folder)
+        model.selectTab(firstTabID)
+
+        model.closeTab(secondTabID)
+        model.addFolder(other)
+        model.activateFolder(folder)
+
+        #expect(model.activeTabID == firstTabID)
     }
 
     @Test @MainActor
@@ -918,7 +1205,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func commandShiftArrowsSwitchAdjacentFoldersAndWrap() throws {
+    func commandShiftArrowsSwitchAdjacentTabGroupsAndWrap() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -940,14 +1227,26 @@ struct SpaceTests {
         model.addFolder(third)
         model.activateFolder(first)
 
-        #expect(model.selectAdjacentFolder(offset: 1))
+        #expect(model.selectAdjacentTabGroup(offset: 1))
         #expect(model.activeFolderURL == second.standardizedFileURL)
-        #expect(model.selectAdjacentFolder(offset: 1))
+        #expect(model.selectAdjacentTabGroup(offset: 1))
         #expect(model.activeFolderURL == third.standardizedFileURL)
-        #expect(model.selectAdjacentFolder(offset: 1))
+        #expect(model.selectAdjacentTabGroup(offset: 1))
+        #expect(model.activeFolderURL == nil)
+        let standaloneTabID = try #require(model.activeTabID)
+        #expect(model.standaloneTabs.map(\.id) == [standaloneTabID])
+
+        model.openNewTerminal()
+        #expect(model.activeTabID != standaloneTabID)
+        model.selectTab(standaloneTabID)
+
+        #expect(model.selectAdjacentTabGroup(offset: 1))
         #expect(model.activeFolderURL == first.standardizedFileURL)
         #expect(model.activeTerminalID == firstTerminalID)
-        #expect(model.selectAdjacentFolder(offset: -1))
+        #expect(model.selectAdjacentTabGroup(offset: -1))
+        #expect(model.activeFolderURL == nil)
+        #expect(model.activeTabID == standaloneTabID)
+        #expect(model.selectAdjacentTabGroup(offset: -1))
         #expect(model.activeFolderURL == third.standardizedFileURL)
     }
 
@@ -960,15 +1259,17 @@ struct SpaceTests {
             defaults: isolatedDefaults(scope: folder),
             initialFolderURL: folder
         )
+        let tabID = try #require(model.activeTabID)
         let firstID = try #require(model.activeTerminalID)
 
         model.splitActiveTerminal(direction: .right)
 
         let secondID = try #require(model.activeTerminalID)
         let tab = try #require(model.activeTerminalTab)
+        #expect(model.activeTabID == tabID)
         #expect(secondID != firstID)
         #expect(model.terminalSessions.count == 2)
-        #expect(model.activeFolderTabs.count == 1)
+        #expect(model.activeScopeTabs.count == 1)
         #expect(tab.terminalIDs == [firstID, secondID])
         let splitSession = try #require(
             model.terminalSessions.first { $0.id == secondID }
@@ -1098,7 +1399,7 @@ struct SpaceTests {
 
         #expect(model.activeTerminalID == firstID)
         #expect(model.activeTerminalTab?.root == .pane(firstID))
-        #expect(model.activeFolderTabs.count == 1)
+        #expect(model.activeScopeTabs.count == 1)
     }
 
     @Test @MainActor
@@ -1170,7 +1471,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func closingLastTerminalLeavesFolderWithoutSession() throws {
+    func closingLastTerminalClearsSelectionAndRequestsWindowClose() throws {
         defer { removeIsolatedDefaults() }
         let folder = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -1179,13 +1480,20 @@ struct SpaceTests {
             initialFolderURL: folder
         )
         let terminalID = try #require(model.activeTerminalID)
+        var closeWindowRequestCount = 0
+        model.closeWindowHandler = {
+            closeWindowRequestCount += 1
+        }
 
         model.closeTerminal(terminalID)
 
+        #expect(model.activeTabID == nil)
         #expect(model.activeTerminalID == nil)
-        #expect(model.activeFolderURL == folder.standardizedFileURL)
+        #expect(model.activeFolderURL == nil)
+        #expect(model.activeScopeTabs.isEmpty)
         #expect(model.activeFolderSessions.isEmpty)
         #expect(!model.hasTerminalSession(in: folder))
+        #expect(closeWindowRequestCount == 1)
     }
 
     @Test @MainActor
@@ -1262,7 +1570,7 @@ struct SpaceTests {
 
         model.moveTab(firstID, to: secondID)
 
-        #expect(model.activeFolderTabs.map(\.id) == [secondID, firstID])
+        #expect(model.activeScopeTabs.map(\.id) == [secondID, firstID])
     }
 
     @Test @MainActor
