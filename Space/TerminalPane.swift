@@ -18,21 +18,6 @@ struct TerminalArea: View {
                 .accessibilityHidden(model.activeTerminalTab?.id != tab.id)
             }
         }
-        .task {
-            while !Task.isCancelled {
-                processHiddenTerminalEvents()
-                try? await Task.sleep(for: .milliseconds(200))
-            }
-        }
-    }
-
-    private func processHiddenTerminalEvents() {
-        guard NSApp.isActive else { return }
-        let visibleTerminalIDs = Set(model.activeTabTerminalIDs)
-        for session in model.terminalSessions
-        where !visibleTerminalIDs.contains(session.id) {
-            session.terminal.controller.tick()
-        }
     }
 }
 
@@ -46,9 +31,7 @@ private struct TerminalSplitTree: View {
     var body: some View {
         switch node {
         case let .pane(id):
-            if let session = model.terminalSessions.first(where: {
-                $0.id == id
-            }) {
+            if let session = model.terminalSession(id: id) {
                 let isFocused = model.activeTerminalID == id
                 GhosttyTerminalPane(
                     session: session,

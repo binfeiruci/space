@@ -346,9 +346,9 @@ private struct FolderSidebar: View {
             let value = tab.wrappedValue
             let visibleTabs = tabs.wrappedValue
             let index = visibleTabs.firstIndex { $0.id == value.id } ?? 0
-            if let session = model.terminalSessions.first(where: {
-                $0.id == value.focusedTerminalID
-            }) {
+            if let session = model.terminalSession(
+                id: value.focusedTerminalID
+            ) {
                 SidebarTerminalTabRow(
                     tab: value,
                     session: session,
@@ -594,7 +594,6 @@ private struct SidebarTerminalTabRow: View {
     let shortcutLabel: String?
     let accessibilityIdentifier: String
     let colors: SidebarRowColors
-    @State private var foregroundProcessName: String?
     @State private var isHovering = false
 
     init(
@@ -610,14 +609,13 @@ private struct SidebarTerminalTabRow: View {
         self.shortcutLabel = shortcutLabel
         self.accessibilityIdentifier = accessibilityIdentifier
         self.colors = colors
-        _foregroundProcessName = State(initialValue: session.currentProcessName)
     }
 
     private var title: String {
         tab.displayTitle(
             automaticTitle: session.displayTitle(
                 terminalTitle: terminal.title,
-                foregroundProcessName: foregroundProcessName
+                foregroundProcessName: session.currentProcessName
             )
         )
     }
@@ -679,12 +677,6 @@ private struct SidebarTerminalTabRow: View {
             }
             Button("Close Tab") {
                 model.requestCloseTab(tab.id)
-            }
-        }
-        .task {
-            while !Task.isCancelled {
-                foregroundProcessName = session.currentProcessName
-                try? await Task.sleep(for: .milliseconds(250))
             }
         }
     }

@@ -25,6 +25,26 @@ private extension AppModel {
     }
 }
 
+private actor StubProcessInspector: TerminalProcessInspecting {
+    private var namesBySessionID: [UUID: String] = [:]
+    private var requestCount = 0
+
+    func processNames(
+        for requests: [TerminalProcessInspector.Request]
+    ) -> [UUID: String] {
+        requestCount += 1
+        return namesBySessionID
+    }
+
+    func setNames(_ names: [UUID: String]) {
+        namesBySessionID = names
+    }
+
+    func requestsReceived() -> Int {
+        requestCount
+    }
+}
+
 @Suite(.serialized)
 struct SpaceTests {
     private static let isolatedDefaultsSuiteName =
@@ -147,6 +167,99 @@ struct SpaceTests {
     }
 
     @Test
+    func terminalRuntimeMonitoringUsesAdaptiveIntervals() {
+        #expect(TerminalRuntimeMonitoringPolicy.interval(
+            applicationIsActive: true,
+            sidebarIsVisible: true
+        ) == .milliseconds(250))
+        #expect(TerminalRuntimeMonitoringPolicy.interval(
+            applicationIsActive: true,
+            sidebarIsVisible: false
+        ) == .milliseconds(750))
+        #expect(TerminalRuntimeMonitoringPolicy.interval(
+            applicationIsActive: false,
+            sidebarIsVisible: true
+        ) == .seconds(1))
+    }
+
+    @Test @MainActor
+    func terminalRuntimeMonitoringLifecycleIsIdempotent() {
+        let defaults = isolatedDefaults(
+            scope: FileManager.default.temporaryDirectory
+        )
+        defer { removeIsolatedDefaults() }
+        let model = AppModel(defaults: defaults)
+
+        #expect(!model.isTerminalRuntimeMonitoring)
+        model.startTerminalRuntimeMonitoring()
+        model.startTerminalRuntimeMonitoring()
+        #expect(model.isTerminalRuntimeMonitoring)
+        model.stopTerminalRuntimeMonitoring()
+        #expect(!model.isTerminalRuntimeMonitoring)
+    }
+
+    @Test @MainActor
+    func refreshingProcessNamesUsesTheInjectedInspector() async throws {
+        defer { removeIsolatedDefaults() }
+        let inspector = StubProcessInspector()
+        let model = AppModel(
+            defaults: isolatedDefaults(
+                scope: FileManager.default.temporaryDirectory
+            ),
+            processInspector: inspector
+        )
+        let session = try #require(model.activeTerminalSession)
+        await inspector.setNames([session.id: "vim"])
+
+        await model.refreshTerminalProcessNames()
+        let requestCount = await inspector.requestsReceived()
+
+        #expect(session.currentProcessName == "vim")
+        #expect(requestCount == 1)
+    }
+
+    @Test @MainActor
+    func terminationCheckRefreshesProcessesBeforeBuildingPrompt() async throws {
+        defer { removeIsolatedDefaults() }
+        let inspector = StubProcessInspector()
+        let model = AppModel(
+            defaults: isolatedDefaults(
+                scope: FileManager.default.temporaryDirectory
+            ),
+            processInspector: inspector
+        )
+        let session = try #require(model.activeTerminalSession)
+        await inspector.setNames([session.id: "vim"])
+
+        let prompt = await ApplicationTerminationCheck.prompt(for: model)
+
+        #expect(prompt.runningProgramNames == ["vim"])
+        #expect(prompt.requiresConfirmation)
+    }
+
+    @Test @MainActor
+    func workspaceIndexTracksSessionAndTabMutations() throws {
+        defer { removeIsolatedDefaults() }
+        let model = AppModel(defaults: isolatedDefaults(
+            scope: FileManager.default.temporaryDirectory
+        ))
+        let firstSession = try #require(model.activeTerminalSession)
+
+        #expect(model.terminalSession(id: firstSession.id) === firstSession)
+        #expect(model.terminalTab(id: firstSession.id)?.id == firstSession.id)
+
+        model.openNewStandaloneTerminal()
+        let secondSession = try #require(model.activeTerminalSession)
+        #expect(model.terminalSession(id: secondSession.id) === secondSession)
+        #expect(model.terminalTab(id: secondSession.id)?.id == secondSession.id)
+
+        model.closeTerminal(secondSession.id)
+        #expect(model.terminalSession(id: secondSession.id) == nil)
+        #expect(model.terminalTab(id: secondSession.id) == nil)
+        #expect(model.terminalSession(id: firstSession.id) === firstSession)
+    }
+
+    @Test
     func folderMemoFileCreatesAndAppendsSelections() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -173,6 +286,60 @@ struct SpaceTests {
             == "---\n1970-01-01 00:00\n\nfirst note\n\n"
                 + "---\n1970-01-01 00:00\n\n"
                 + "second note\nthird line\n\n")
+    }
+
+    @Test
+    func folderMemoWriterPerformsSerializedBackgroundWrites() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = FolderMemoWriter()
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for index in 0 ..< 8 {
+                group.addTask {
+                    try await writer.append("entry-\(index)", in: directory)
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        let contents = try String(
+            contentsOf: directory.appendingPathComponent(".memo"),
+            encoding: .utf8
+        )
+        #expect(contents.components(separatedBy: "---\n").count - 1 == 8)
+        for index in 0 ..< 8 {
+            #expect(contents.contains("entry-\(index)\n\n"))
+        }
+    }
+
+    @Test @MainActor
+    func terminalSelectionReaderAlwaysRestoresThePasteboard() {
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("SpaceTests.\(UUID().uuidString)")
+        )
+        pasteboard.clearContents()
+        pasteboard.setString("original", forType: .string)
+
+        let missingSelection = TerminalSelectionReader.selection(
+            from: pasteboard
+        ) {
+            pasteboard.clearContents()
+            pasteboard.setString("temporary", forType: .string)
+            return false
+        }
+
+        #expect(missingSelection == nil)
+        #expect(pasteboard.string(forType: .string) == "original")
+
+        let selection = TerminalSelectionReader.selection(from: pasteboard) {
+            pasteboard.clearContents()
+            pasteboard.setString("selected", forType: .string)
+            return true
+        }
+
+        #expect(selection == "selected")
+        #expect(pasteboard.string(forType: .string) == "original")
     }
 
     @Test @MainActor
@@ -932,7 +1099,7 @@ struct SpaceTests {
 
     @Test @MainActor
     func foregroundProcessResolverFollowsNestedPTY() throws {
-        let wrapper = TerminalSession.ProcessSnapshot(
+        let wrapper = TerminalProcessInspector.ProcessSnapshot(
             processID: 100,
             parentProcessID: 1,
             processGroupID: 100,
@@ -940,7 +1107,7 @@ struct SpaceTests {
             terminalForegroundProcessGroupID: 100,
             name: "pty-wrapper"
         )
-        let bridge = TerminalSession.ProcessSnapshot(
+        let bridge = TerminalProcessInspector.ProcessSnapshot(
             processID: 101,
             parentProcessID: 100,
             processGroupID: 101,
@@ -948,7 +1115,7 @@ struct SpaceTests {
             terminalForegroundProcessGroupID: 0,
             name: "bridge"
         )
-        let idleShell = TerminalSession.ProcessSnapshot(
+        let idleShell = TerminalProcessInspector.ProcessSnapshot(
             processID: 102,
             parentProcessID: 101,
             processGroupID: 102,
@@ -958,7 +1125,7 @@ struct SpaceTests {
         )
 
         let idleProcess = try #require(
-            TerminalSession.resolveForegroundProcess(
+            TerminalProcessInspector.resolveForegroundProcess(
                 processGroupID: 100,
                 ttyDevice: 7,
                 processes: [wrapper, bridge, idleShell]
@@ -967,7 +1134,7 @@ struct SpaceTests {
         #expect(idleProcess.processID == 102)
         #expect(idleProcess.name == "zsh")
 
-        let waitingShell = TerminalSession.ProcessSnapshot(
+        let waitingShell = TerminalProcessInspector.ProcessSnapshot(
             processID: 102,
             parentProcessID: 101,
             processGroupID: 102,
@@ -975,7 +1142,7 @@ struct SpaceTests {
             terminalForegroundProcessGroupID: 103,
             name: "zsh"
         )
-        let top = TerminalSession.ProcessSnapshot(
+        let top = TerminalProcessInspector.ProcessSnapshot(
             processID: 103,
             parentProcessID: 102,
             processGroupID: 103,
@@ -983,7 +1150,7 @@ struct SpaceTests {
             terminalForegroundProcessGroupID: 103,
             name: "top"
         )
-        let backgroundProcess = TerminalSession.ProcessSnapshot(
+        let backgroundProcess = TerminalProcessInspector.ProcessSnapshot(
             processID: 104,
             parentProcessID: 102,
             processGroupID: 104,
@@ -993,7 +1160,7 @@ struct SpaceTests {
         )
 
         let runningProcess = try #require(
-            TerminalSession.resolveForegroundProcess(
+            TerminalProcessInspector.resolveForegroundProcess(
                 processGroupID: 100,
                 ttyDevice: 7,
                 processes: [
@@ -1012,14 +1179,14 @@ struct SpaceTests {
     @Test @MainActor
     func foregroundProcessResolverSkipsLoginAndSelectsItsShell() throws {
         let processes = [
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 100,
                 parentProcessID: 1,
                 processGroupID: 100,
                 ttyDevice: 7,
                 name: "login"
             ),
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 101,
                 parentProcessID: 100,
                 processGroupID: 100,
@@ -1028,11 +1195,13 @@ struct SpaceTests {
             ),
         ]
 
-        let process = try #require(TerminalSession.resolveForegroundProcess(
-            processGroupID: 100,
-            ttyDevice: 7,
-            processes: processes
-        ))
+        let process = try #require(
+            TerminalProcessInspector.resolveForegroundProcess(
+                processGroupID: 100,
+                ttyDevice: 7,
+                processes: processes
+            )
+        )
 
         #expect(process.processID == 101)
         #expect(process.name == "zsh")
@@ -1041,14 +1210,14 @@ struct SpaceTests {
     @Test @MainActor
     func foregroundProcessResolverUsesNonLauncherGroupLeader() throws {
         let processes = [
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 200,
                 parentProcessID: 101,
                 processGroupID: 200,
                 ttyDevice: 7,
                 name: "vim"
             ),
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 201,
                 parentProcessID: 200,
                 processGroupID: 200,
@@ -1057,11 +1226,13 @@ struct SpaceTests {
             ),
         ]
 
-        let process = try #require(TerminalSession.resolveForegroundProcess(
-            processGroupID: 200,
-            ttyDevice: 7,
-            processes: processes
-        ))
+        let process = try #require(
+            TerminalProcessInspector.resolveForegroundProcess(
+                processGroupID: 200,
+                ttyDevice: 7,
+                processes: processes
+            )
+        )
 
         #expect(process.processID == 200)
         #expect(process.name == "vim")
@@ -1070,7 +1241,7 @@ struct SpaceTests {
     @Test @MainActor
     func foregroundProcessResolverRejectsPIDFromAnotherTTY() {
         let processes = [
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 300,
                 parentProcessID: 1,
                 processGroupID: 300,
@@ -1079,7 +1250,7 @@ struct SpaceTests {
             ),
         ]
 
-        let process = TerminalSession.resolveForegroundProcess(
+        let process = TerminalProcessInspector.resolveForegroundProcess(
             processGroupID: 300,
             ttyDevice: 7,
             processes: processes
@@ -1090,14 +1261,14 @@ struct SpaceTests {
     @Test @MainActor
     func foregroundProcessResolverUsesDeepestTTYProcessWithoutALeader() throws {
         let processes = [
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 401,
                 parentProcessID: 400,
                 processGroupID: 400,
                 ttyDevice: 7,
                 name: "zsh"
             ),
-            TerminalSession.ProcessSnapshot(
+            TerminalProcessInspector.ProcessSnapshot(
                 processID: 402,
                 parentProcessID: 401,
                 processGroupID: 400,
@@ -1106,11 +1277,13 @@ struct SpaceTests {
             ),
         ]
 
-        let process = try #require(TerminalSession.resolveForegroundProcess(
-            processGroupID: 400,
-            ttyDevice: 7,
-            processes: processes
-        ))
+        let process = try #require(
+            TerminalProcessInspector.resolveForegroundProcess(
+                processGroupID: 400,
+                ttyDevice: 7,
+                processes: processes
+            )
+        )
 
         #expect(process.processID == 402)
         #expect(process.name == "top")

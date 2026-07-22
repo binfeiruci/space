@@ -7,6 +7,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
     UNUserNotificationCenterDelegate {
     weak var model: AppModel?
     private var applicationShortcutMonitor: Any?
+    private var terminationCheckTask: Task<Void, Never>?
 
     func installApplicationShortcutMonitor(for model: AppModel) {
         self.model = model
@@ -64,6 +65,9 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
             NSEvent.removeMonitor(applicationShortcutMonitor)
         }
         applicationShortcutMonitor = nil
+        terminationCheckTask?.cancel()
+        terminationCheckTask = nil
+        model?.stopTerminalRuntimeMonitoring()
         model?.agentAttentionHandler = nil
         model?.agentAttentionClearedHandler = nil
     }
@@ -160,14 +164,26 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
         guard let model else {
             return .terminateNow
         }
+        guard terminationCheckTask == nil else {
+            return .terminateLater
+        }
 
-        let runningPrograms = model.terminalSessions.compactMap(
-            \.runningForegroundProcessName
-        )
-        let prompt = ApplicationTerminationPrompt(
-            runningProgramNames: runningPrograms
-        )
-        guard prompt.requiresConfirmation else { return .terminateNow }
+        terminationCheckTask = Task { [weak self] in
+            let prompt = await ApplicationTerminationCheck.prompt(for: model)
+            guard !Task.isCancelled else { return }
+            let shouldTerminate = self?.confirmApplicationTermination(
+                prompt
+            ) ?? true
+            self?.terminationCheckTask = nil
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+        return .terminateLater
+    }
+
+    private func confirmApplicationTermination(
+        _ prompt: ApplicationTerminationPrompt
+    ) -> Bool {
+        guard prompt.requiresConfirmation else { return true }
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -177,8 +193,17 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
         alert.addButton(withTitle: "Cancel")
 
         return alert.runModal() == .alertFirstButtonReturn
-            ? .terminateNow
-            : .terminateCancel
+    }
+}
+
+enum ApplicationTerminationCheck {
+    static func prompt(for model: AppModel) async -> ApplicationTerminationPrompt {
+        await model.refreshTerminalProcessNames()
+        return ApplicationTerminationPrompt(
+            runningProgramNames: model.terminalSessions.compactMap(
+                \.runningForegroundProcessName
+            )
+        )
     }
 }
 
@@ -312,6 +337,7 @@ struct SpaceApp: App {
                 ContentView()
                     .environmentObject(model)
                     .onAppear {
+                        model.startTerminalRuntimeMonitoring()
                         appDelegate.installApplicationShortcutMonitor(
                             for: model
                         )

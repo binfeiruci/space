@@ -1,436 +1,19 @@
 import AppKit
 import Combine
 import CoreGraphics
-import Darwin
 import Foundation
 import GhosttyTerminal
-
-enum FolderAdditionResult: Equatable {
-    case added(URL)
-    case invalid(URL)
-    case duplicate(URL)
-}
-
-struct Folder: Identifiable, Equatable {
-    let url: URL
-
-    var id: String {
-        url.standardizedFileURL.path
-    }
-
-    var displayName: String {
-        let folderURL = url.resolvingSymlinksInPath().standardizedFileURL
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        return folderURL == homeURL ? "~" : url.lastPathComponent
-    }
-}
-
-struct AlertRequest: Identifiable, Equatable {
-    enum Action: Equatable {
-        case removeFolder(URL)
-        case closeTerminal(UUID)
-        case closeTab(UUID)
-    }
-
-    let id = UUID()
-    let title: String
-    let message: String
-    let confirmationTitle: String?
-    let action: Action?
-}
-
-struct TabRenameRequest: Identifiable, Equatable {
-    let id = UUID()
-    let tabID: UUID
-    let initialTitle: String
-    let automaticTitle: String
-}
-
-struct AgentAttentionNotification: Identifiable, Equatable {
-    let id: UUID
-    let title: String
-    let body: String
-    let receivedAt: Date
-
-    init(
-        id: UUID = UUID(),
-        title: String,
-        body: String,
-        receivedAt: Date = Date()
-    ) {
-        self.id = id
-        self.title = title
-        self.body = body
-        self.receivedAt = receivedAt
-    }
-}
-
-struct MemoSaveNotice: Identifiable, Equatable {
-    let id = UUID()
-    let message: String
-    let systemImage: String
-}
-
-enum TerminalSearchAction {
-    static func update(query: String) -> String {
-        "search:\(query)"
-    }
-
-    static func navigate(forward: Bool) -> String {
-        "navigate_search:\(forward ? "next" : "previous")"
-    }
-
-    static let end = "end_search"
-}
-
-enum FolderMemoFile {
-    static let filename = ".memo"
-
-    static func append(
-        _ text: String,
-        date: Date = Date(),
-        timeZone: TimeZone = .current,
-        in folderURL: URL
-    ) throws {
-        guard !text.isEmpty else { return }
-
-        let fileURL = folderURL.appendingPathComponent(filename)
-        let fileManager = FileManager.default
-        let exists = fileManager.fileExists(atPath: fileURL.path)
-        var data = Data()
-
-        if exists {
-            let attributes = try fileManager.attributesOfItem(
-                atPath: fileURL.path
-            )
-            let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-            if fileSize > 0 {
-                let readHandle = try FileHandle(forReadingFrom: fileURL)
-                defer { try? readHandle.close() }
-                let endingSize = min(fileSize, 2)
-                try readHandle.seek(toOffset: fileSize - endingSize)
-                let ending = try readHandle.read(upToCount: Int(endingSize))
-                    ?? Data()
-                let newlineCount = ending.reversed().prefix { $0 == 0x0A }.count
-                for _ in newlineCount ..< 2 {
-                    data.append(0x0A)
-                }
-            }
-        }
-
-        let entry = memoEntry(
-            text: text,
-            date: date,
-            timeZone: timeZone
-        )
-        data.append(contentsOf: entry.utf8)
-        let newlineCount = data.reversed().prefix { $0 == 0x0A }.count
-        for _ in newlineCount ..< 2 {
-            data.append(0x0A)
-        }
-
-        if exists {
-            let writeHandle = try FileHandle(forWritingTo: fileURL)
-            defer { try? writeHandle.close() }
-            try writeHandle.seekToEnd()
-            try writeHandle.write(contentsOf: data)
-        } else {
-            try data.write(to: fileURL, options: .atomic)
-        }
-    }
-
-    private static func memoEntry(
-        text: String,
-        date: Date,
-        timeZone: TimeZone
-    ) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = timeZone
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return "---\n\(formatter.string(from: date))\n\n\(text)"
-    }
-}
-
-private struct PasteboardSnapshot {
-    private let items: [[(type: NSPasteboard.PasteboardType, data: Data)]]
-
-    init(_ pasteboard: NSPasteboard) {
-        items = pasteboard.pasteboardItems?.map { item in
-            item.types.compactMap { type in
-                item.data(forType: type).map { (type, $0) }
-            }
-        } ?? []
-    }
-
-    func restore(to pasteboard: NSPasteboard) {
-        pasteboard.clearContents()
-        let pasteboardItems = items.map { values in
-            let item = NSPasteboardItem()
-            for value in values {
-                item.setData(value.data, forType: value.type)
-            }
-            return item
-        }
-        if !pasteboardItems.isEmpty {
-            pasteboard.writeObjects(pasteboardItems)
-        }
-    }
-}
-
-enum TerminalSplitAxis: Equatable {
-    case horizontal
-    case vertical
-}
-
-enum TerminalSplitDirection: CaseIterable, Equatable {
-    case left
-    case right
-    case up
-    case down
-
-    var axis: TerminalSplitAxis {
-        switch self {
-        case .left, .right:
-            return .horizontal
-        case .up, .down:
-            return .vertical
-        }
-    }
-
-    var insertsBeforeCurrentPane: Bool {
-        self == .left || self == .up
-    }
-}
-
-indirect enum TerminalSplitNode: Equatable {
-    case pane(UUID)
-    case split(
-        id: UUID,
-        axis: TerminalSplitAxis,
-        ratio: CGFloat,
-        first: TerminalSplitNode,
-        second: TerminalSplitNode
-    )
-
-    var terminalIDs: [UUID] {
-        switch self {
-        case let .pane(id):
-            return [id]
-        case let .split(_, _, _, first, second):
-            return first.terminalIDs + second.terminalIDs
-        }
-    }
-
-    func contains(_ terminalID: UUID) -> Bool {
-        switch self {
-        case let .pane(id):
-            return id == terminalID
-        case let .split(_, _, _, first, second):
-            return first.contains(terminalID) || second.contains(terminalID)
-        }
-    }
-
-    func inserting(
-        _ newTerminalID: UUID,
-        beside terminalID: UUID,
-        direction: TerminalSplitDirection
-    ) -> TerminalSplitNode {
-        switch self {
-        case let .pane(id):
-            guard id == terminalID else { return self }
-            let current = TerminalSplitNode.pane(id)
-            let new = TerminalSplitNode.pane(newTerminalID)
-            return .split(
-                id: UUID(),
-                axis: direction.axis,
-                ratio: 0.5,
-                first: direction.insertsBeforeCurrentPane ? new : current,
-                second: direction.insertsBeforeCurrentPane ? current : new
-            )
-        case let .split(id, axis, ratio, first, second):
-            if first.contains(terminalID) {
-                return .split(
-                    id: id,
-                    axis: axis,
-                    ratio: ratio,
-                    first: first.inserting(
-                        newTerminalID,
-                        beside: terminalID,
-                        direction: direction
-                    ),
-                    second: second
-                )
-            }
-            guard second.contains(terminalID) else { return self }
-            return .split(
-                id: id,
-                axis: axis,
-                ratio: ratio,
-                first: first,
-                second: second.inserting(
-                    newTerminalID,
-                    beside: terminalID,
-                    direction: direction
-                )
-            )
-        }
-    }
-
-    func removing(_ terminalID: UUID) -> TerminalSplitNode? {
-        switch self {
-        case let .pane(id):
-            return id == terminalID ? nil : self
-        case let .split(id, axis, ratio, first, second):
-            let updatedFirst = first.removing(terminalID)
-            let updatedSecond = second.removing(terminalID)
-            switch (updatedFirst, updatedSecond) {
-            case let (first?, second?):
-                return .split(
-                    id: id,
-                    axis: axis,
-                    ratio: ratio,
-                    first: first,
-                    second: second
-                )
-            case let (first?, nil):
-                return first
-            case let (nil, second?):
-                return second
-            case (nil, nil):
-                return nil
-            }
-        }
-    }
-
-    func settingRatio(_ newRatio: CGFloat, for splitID: UUID)
-        -> TerminalSplitNode {
-        switch self {
-        case .pane:
-            return self
-        case let .split(id, axis, ratio, first, second):
-            return .split(
-                id: id,
-                axis: axis,
-                ratio: id == splitID
-                    ? min(max(newRatio, 0), 1)
-                    : ratio,
-                first: first.settingRatio(newRatio, for: splitID),
-                second: second.settingRatio(newRatio, for: splitID)
-            )
-        }
-    }
-
-    func balancedForEqualSplits() -> TerminalSplitNode {
-        switch self {
-        case .pane:
-            return self
-        case let .split(id, axis, _, first, second):
-            let balancedFirst = first.balancedForEqualSplits()
-            let balancedSecond = second.balancedForEqualSplits()
-            let firstSpan = balancedFirst.spanCount(along: axis)
-            let secondSpan = balancedSecond.spanCount(along: axis)
-            return .split(
-                id: id,
-                axis: axis,
-                ratio: CGFloat(firstSpan) / CGFloat(firstSpan + secondSpan),
-                first: balancedFirst,
-                second: balancedSecond
-            )
-        }
-    }
-
-    private func spanCount(along axis: TerminalSplitAxis) -> Int {
-        switch self {
-        case .pane:
-            return 1
-        case let .split(_, splitAxis, _, first, second):
-            guard splitAxis == axis else { return 1 }
-            return first.spanCount(along: axis)
-                + second.spanCount(along: axis)
-        }
-    }
-
-    func paneFrames(in bounds: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1))
-        -> [UUID: CGRect] {
-        switch self {
-        case let .pane(id):
-            return [id: bounds]
-        case let .split(_, axis, ratio, first, second):
-            let clampedRatio = min(max(ratio, 0), 1)
-            let firstBounds: CGRect
-            let secondBounds: CGRect
-            switch axis {
-            case .horizontal:
-                let firstWidth = bounds.width * clampedRatio
-                firstBounds = CGRect(
-                    x: bounds.minX,
-                    y: bounds.minY,
-                    width: firstWidth,
-                    height: bounds.height
-                )
-                secondBounds = CGRect(
-                    x: bounds.minX + firstWidth,
-                    y: bounds.minY,
-                    width: bounds.width - firstWidth,
-                    height: bounds.height
-                )
-            case .vertical:
-                let firstHeight = bounds.height * clampedRatio
-                firstBounds = CGRect(
-                    x: bounds.minX,
-                    y: bounds.minY,
-                    width: bounds.width,
-                    height: firstHeight
-                )
-                secondBounds = CGRect(
-                    x: bounds.minX,
-                    y: bounds.minY + firstHeight,
-                    width: bounds.width,
-                    height: bounds.height - firstHeight
-                )
-            }
-            return first.paneFrames(in: firstBounds).merging(
-                second.paneFrames(in: secondBounds),
-                uniquingKeysWith: { first, _ in first }
-            )
-        }
-    }
-}
-
-struct TerminalTabState: Identifiable, Equatable {
-    let id: UUID
-    let ownerFolderURL: URL?
-    var root: TerminalSplitNode
-    var focusedTerminalID: UUID
-    var customTitle: String? = nil
-
-    var terminalIDs: [UUID] {
-        root.terminalIDs
-    }
-
-    func displayTitle(automaticTitle: String) -> String {
-        guard let customTitle,
-              !customTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                  .isEmpty else { return automaticTitle }
-        return customTitle
-    }
-}
-
-private struct ClosedTerminalLocation {
-    let workingDirectoryURL: URL
-    let ownerFolderURL: URL?
-}
 
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var folders: [Folder]
     @Published private var sidebarFolderPaths: [String]
-    @Published private(set) var terminalSessions: [TerminalSession]
-    @Published private(set) var terminalTabs: [TerminalTabState]
+    @Published private(set) var terminalSessions: [TerminalSession] {
+        willSet { workspaceIndex.indexSessions(newValue) }
+    }
+    @Published private(set) var terminalTabs: [TerminalTabState] {
+        willSet { workspaceIndex.indexTabs(newValue) }
+    }
     @Published private(set) var activeTabID: UUID?
     @Published private(set) var alertRequest: AlertRequest?
     @Published private(set) var renameRequest: TabRenameRequest?
@@ -447,9 +30,12 @@ final class AppModel: ObservableObject {
     var agentAttentionClearedHandler: ((UUID) -> Void)?
     var closeWindowHandler: (() -> Void)?
 
-    private let defaults: UserDefaults
-    private var agentAttentionCancellables: [UUID: AnyCancellable] = [:]
-    private var agentAttentionFocusCancellables: [UUID: AnyCancellable] = [:]
+    private let folderStore: FolderStore
+    private let processInspector: any TerminalProcessInspecting
+    private let memoWriter = FolderMemoWriter()
+    private let agentAttentionCoordinator = AgentAttentionCoordinator()
+    private var workspaceIndex = TerminalWorkspaceIndex()
+    private var terminalRuntimeMonitorTask: Task<Void, Never>?
     private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
     private var recentlyClosedTerminalLocations: [ClosedTerminalLocation] = []
     private var lastActiveStandaloneTabID: UUID?
@@ -457,13 +43,18 @@ final class AppModel: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        initialFolderURL: URL? = nil
+        initialFolderURL: URL? = nil,
+        processInspector: any TerminalProcessInspecting =
+            TerminalProcessInspector()
     ) {
-        self.defaults = defaults
+        folderStore = FolderStore(defaults: defaults)
+        self.processInspector = processInspector
         settings = AppSettings(defaults: defaults)
 
-        let restoredFolders = Self.restoredFolders(from: defaults)
-        let requestedInitialFolderURL = Self.validFolderURL(initialFolderURL)
+        let restoredFolders = folderStore.restore()
+        let requestedInitialFolderURL = FolderStore.validFolderURL(
+            initialFolderURL
+        )
         let folderURLs: [URL]
         if let initialFolder = requestedInitialFolderURL {
             folderURLs = [initialFolder]
@@ -511,6 +102,8 @@ final class AppModel: ObservableObject {
             lastActiveStandaloneTabID = initialSession.id
             bindCloseHandler(to: initialSession)
         }
+        workspaceIndex.indexSessions(terminalSessions)
+        workspaceIndex.indexTabs(terminalTabs)
         persistFolders()
     }
 
@@ -568,7 +161,7 @@ final class AppModel: ObservableObject {
 
     var activeTerminalTab: TerminalTabState? {
         guard let activeTabID else { return nil }
-        return terminalTabs.first { $0.id == activeTabID }
+        return terminalTab(id: activeTabID)
     }
 
     var activeTerminalID: UUID? {
@@ -585,11 +178,82 @@ final class AppModel: ObservableObject {
 
     var activeTerminalSession: TerminalSession? {
         guard let activeTerminalID else { return nil }
-        return terminalSessions.first { $0.id == activeTerminalID }
+        return terminalSession(id: activeTerminalID)
+    }
+
+    func terminalSession(id: UUID) -> TerminalSession? {
+        workspaceIndex.session(id: id)
+    }
+
+    private func terminalSessionIndex(id: UUID) -> Int? {
+        workspaceIndex.sessionIndex(id: id)
+    }
+
+    func terminalTab(id: UUID) -> TerminalTabState? {
+        workspaceIndex.tabIndex(id: id).map { terminalTabs[$0] }
+    }
+
+    private func terminalTabIndex(containing terminalID: UUID) -> Int? {
+        workspaceIndex.tabIndex(containing: terminalID)
     }
 
     var canRestoreClosedTerminal: Bool {
         !recentlyClosedTerminalLocations.isEmpty
+    }
+
+    func startTerminalRuntimeMonitoring() {
+        guard terminalRuntimeMonitorTask == nil else { return }
+        terminalRuntimeMonitorTask = Task { [weak self] in
+            await self?.monitorTerminalRuntime()
+        }
+    }
+
+    func stopTerminalRuntimeMonitoring() {
+        terminalRuntimeMonitorTask?.cancel()
+        terminalRuntimeMonitorTask = nil
+    }
+
+    var isTerminalRuntimeMonitoring: Bool {
+        terminalRuntimeMonitorTask != nil
+    }
+
+    func refreshTerminalProcessNames() async {
+        let requests = terminalSessions.compactMap(
+            \.processInspectionRequest
+        )
+        let namesBySessionID = await processInspector.processNames(
+            for: requests
+        )
+        guard !Task.isCancelled else { return }
+        for session in terminalSessions {
+            session.updateCurrentProcessName(
+                namesBySessionID[session.id]
+            )
+        }
+    }
+
+    private func monitorTerminalRuntime() async {
+        while !Task.isCancelled {
+            let applicationIsActive = NSApp.isActive
+            if applicationIsActive {
+                let visibleTerminalIDs = Set(activeTabTerminalIDs)
+                for session in terminalSessions
+                where !visibleTerminalIDs.contains(session.id) {
+                    session.terminal.controller.tick()
+                }
+            }
+
+            await refreshTerminalProcessNames()
+            guard !Task.isCancelled else { return }
+            do {
+                try await Task.sleep(for: TerminalRuntimeMonitoringPolicy.interval(
+                    applicationIsActive: applicationIsActive,
+                    sidebarIsVisible: isSidebarVisible
+                ))
+            } catch {
+                return
+            }
+        }
     }
 
     func chooseFolder() {
@@ -600,48 +264,39 @@ final class AppModel: ObservableObject {
         isFolderImporterPresented = false
     }
 
-    @discardableResult
-    func sendActiveSelectionToMemo() -> Bool {
+    func sendActiveSelectionToMemo() {
         guard let session = activeTerminalSession,
-              let terminalView = session.terminalView else { return false }
+              let terminalView = session.terminalView else { return }
 
         let pasteboard = NSPasteboard.general
-        let pasteboardSnapshot = PasteboardSnapshot(pasteboard)
-        guard terminalView.copySelectedTextToPasteboard() else {
+        guard let selection = TerminalSelectionReader.selection(
+            from: pasteboard,
+            copyingSelection: terminalView.copySelectedTextToPasteboard
+        ) else {
             memoSaveNotice = MemoSaveNotice(
                 message: "No text selected.",
                 systemImage: "exclamationmark.circle"
             )
-            return false
-        }
-        defer { pasteboardSnapshot.restore(to: pasteboard) }
-        guard let selection = pasteboard.string(forType: .string),
-              !selection.isEmpty else {
-            memoSaveNotice = MemoSaveNotice(
-                message: "No text selected.",
-                systemImage: "exclamationmark.circle"
-            )
-            return false
+            return
         }
 
-        do {
-            try FolderMemoFile.append(
-                selection,
-                in: session.workingDirectoryURL
-            )
-            memoSaveNotice = MemoSaveNotice(
-                message: "Added to .memo",
-                systemImage: "checkmark"
-            )
-            return true
-        } catch {
-            alertRequest = AlertRequest(
-                title: "Unable to Update .memo",
-                message: error.localizedDescription,
-                confirmationTitle: nil,
-                action: nil
-            )
-            return false
+        let folderURL = session.workingDirectoryURL
+        let writer = memoWriter
+        Task { [weak self] in
+            do {
+                try await writer.append(selection, in: folderURL)
+                self?.memoSaveNotice = MemoSaveNotice(
+                    message: "Added to .memo",
+                    systemImage: "checkmark"
+                )
+            } catch {
+                self?.alertRequest = AlertRequest(
+                    title: "Unable to Update .memo",
+                    message: error.localizedDescription,
+                    confirmationTitle: nil,
+                    action: nil
+                )
+            }
         }
     }
 
@@ -688,7 +343,7 @@ final class AppModel: ObservableObject {
         _ url: URL,
         activate: Bool = true
     ) -> FolderAdditionResult {
-        guard let folderURL = Self.validFolderURL(url) else {
+        guard let folderURL = FolderStore.validFolderURL(url) else {
             return .invalid(url.standardizedFileURL)
         }
         if folderURLs.contains(where: {
@@ -708,7 +363,7 @@ final class AppModel: ObservableObject {
 
     func folderURL(containing url: URL) -> URL? {
         folderURLs
-            .filter { Self.isInside(url, folder: $0) }
+            .filter { FolderStore.contains(url, in: $0) }
             .max { $0.path.count < $1.path.count }
     }
 
@@ -753,8 +408,7 @@ final class AppModel: ObservableObject {
         let removedSessionIDs = Set(removedTabs.flatMap(\.terminalIDs))
         for session in terminalSessions where removedSessionIDs.contains(session.id) {
             session.terminal.onClose = nil
-            agentAttentionCancellables.removeValue(forKey: session.id)
-            agentAttentionFocusCancellables.removeValue(forKey: session.id)
+            agentAttentionCoordinator.unbind(terminalID: session.id)
             stopTrackingTerminalTitle(for: session.id)
             clearAgentAttention(for: session.id)
         }
@@ -798,10 +452,11 @@ final class AppModel: ObservableObject {
             return
         }
         let rememberedTab = lastActiveTabIDByFolderPath[folderPath].flatMap {
-            rememberedID in terminalTabs.first(where: {
-                $0.id == rememberedID
-                    && $0.ownerFolderURL?.standardizedFileURL.path == folderPath
-            })
+            rememberedID in terminalTab(id: rememberedID).flatMap { tab in
+                tab.ownerFolderURL?.standardizedFileURL.path == folderPath
+                    ? tab
+                    : nil
+            }
         }
         if let existing = rememberedTab ?? terminalTabs.last(where: {
             $0.ownerFolderURL?.standardizedFileURL.path == folderPath
@@ -881,7 +536,7 @@ final class AppModel: ObservableObject {
     }
 
     private func openStandaloneTerminal(workingDirectoryURL: URL) {
-        guard let workingDirectoryURL = Self.validFolderURL(
+        guard let workingDirectoryURL = FolderStore.validFolderURL(
             workingDirectoryURL
         ) else { return }
         let session = TerminalSession(
@@ -941,9 +596,9 @@ final class AppModel: ObservableObject {
     ) -> TerminalSession? {
         guard let activeTerminalID,
               let activeSession = activeTerminalSession,
-              let tabIndex = terminalTabs.firstIndex(where: {
-                  $0.root.contains(activeTerminalID)
-              }) else { return nil }
+              let tabIndex = terminalTabIndex(
+                  containing: activeTerminalID
+              ) else { return nil }
 
         let session = TerminalSession(
             workingDirectoryURL: activeSession.workingDirectoryURL,
@@ -966,10 +621,8 @@ final class AppModel: ObservableObject {
     }
 
     func selectTerminal(_ id: UUID) {
-        guard terminalSessions.contains(where: { $0.id == id }),
-              let tabIndex = terminalTabs.firstIndex(where: {
-                  $0.root.contains(id)
-              }) else { return }
+        guard terminalSession(id: id) != nil,
+              let tabIndex = terminalTabIndex(containing: id) else { return }
         terminalTabs[tabIndex].focusedTerminalID = id
         let tab = terminalTabs[tabIndex]
         activeTabID = tab.id
@@ -983,7 +636,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectTab(_ id: UUID) {
-        guard let tab = terminalTabs.first(where: { $0.id == id }) else { return }
+        guard let tab = terminalTab(id: id) else { return }
         selectTerminal(
             latestAgentAttentionTerminalID(in: tab.terminalIDs)
                 ?? tab.focusedTerminalID
@@ -991,7 +644,7 @@ final class AppModel: ObservableObject {
     }
 
     func tabNeedsAgentAttention(_ id: UUID) -> Bool {
-        guard let tab = terminalTabs.first(where: { $0.id == id }) else {
+        guard let tab = terminalTab(id: id) else {
             return false
         }
         return latestAgentAttentionTerminalID(in: tab.terminalIDs) != nil
@@ -1051,9 +704,7 @@ final class AppModel: ObservableObject {
         terminalIsFocused: Bool,
         applicationIsActive: Bool
     ) {
-        guard let session = terminalSessions.first(where: {
-            $0.id == terminalID
-        }) else { return }
+        guard let session = terminalSession(id: terminalID) else { return }
 
         if applicationIsActive,
            activeTerminalID == terminalID,
@@ -1073,9 +724,7 @@ final class AppModel: ObservableObject {
     func clearVisibleAgentAttention() {
         guard NSApp.isActive,
               let terminalID = activeTerminalID,
-              let session = terminalSessions.first(where: {
-                  $0.id == terminalID
-              }),
+              let session = terminalSession(id: terminalID),
               session.terminal.isFocused else { return }
         clearAgentAttention(for: terminalID)
     }
@@ -1162,9 +811,7 @@ final class AppModel: ObservableObject {
     }
 
     func requestCloseTerminal(_ id: UUID) {
-        guard let session = terminalSessions.first(where: {
-            $0.id == id
-        }) else { return }
+        guard let session = terminalSession(id: id) else { return }
         guard let runningProcessName = session.runningForegroundProcessName else {
             closeTerminal(id)
             return
@@ -1180,9 +827,9 @@ final class AppModel: ObservableObject {
     }
 
     func requestCloseTab(_ id: UUID) {
-        guard let tab = terminalTabs.first(where: { $0.id == id }) else { return }
+        guard let tab = terminalTab(id: id) else { return }
         let runningPrograms = tab.terminalIDs.compactMap { terminalID in
-            terminalSessions.first(where: { $0.id == terminalID }).flatMap {
+            terminalSession(id: terminalID).flatMap {
                 $0.runningForegroundProcessName
             }
         }
@@ -1207,8 +854,7 @@ final class AppModel: ObservableObject {
     }
 
     func closeTab(_ id: UUID) {
-        guard let terminalIDs = terminalTabs.first(where: { $0.id == id })?
-            .terminalIDs else { return }
+        guard let terminalIDs = terminalTab(id: id)?.terminalIDs else { return }
         for terminalID in terminalIDs {
             closeTerminal(terminalID)
         }
@@ -1218,14 +864,10 @@ final class AppModel: ObservableObject {
         _ id: UUID,
         recordsForRestoration: Bool = true
     ) {
-        guard let sessionIndex = terminalSessions.firstIndex(where: {
-            $0.id == id
-        }) else { return }
+        guard let sessionIndex = terminalSessionIndex(id: id) else { return }
 
         let closingSession = terminalSessions[sessionIndex]
-        guard let tabIndex = terminalTabs.firstIndex(where: {
-            $0.root.contains(id)
-        }) else { return }
+        guard let tabIndex = terminalTabIndex(containing: id) else { return }
         let closingTab = terminalTabs[tabIndex]
         let paneIDs = closingTab.terminalIDs
         let paneIndex = paneIDs.firstIndex(of: id)
@@ -1255,8 +897,7 @@ final class AppModel: ObservableObject {
             }
         }
         closingSession.terminal.onClose = nil
-        agentAttentionCancellables.removeValue(forKey: id)
-        agentAttentionFocusCancellables.removeValue(forKey: id)
+        agentAttentionCoordinator.unbind(terminalID: id)
         stopTrackingTerminalTitle(for: id)
         clearAgentAttention(for: id)
         if let updatedRoot = closingTab.root.removing(id) {
@@ -1304,7 +945,9 @@ final class AppModel: ObservableObject {
 
     func restoreLastClosedTerminal() {
         while let location = recentlyClosedTerminalLocations.popLast() {
-            guard Self.validFolderURL(location.workingDirectoryURL) != nil else {
+            guard FolderStore.validFolderURL(
+                location.workingDirectoryURL
+            ) != nil else {
                 continue
             }
             if let folderURL = location.ownerFolderURL {
@@ -1322,10 +965,10 @@ final class AppModel: ObservableObject {
     }
 
     func promptRenameTab(_ id: UUID) {
-        guard let tab = terminalTabs.first(where: { $0.id == id }),
-              let session = terminalSessions.first(where: {
-                  $0.id == tab.focusedTerminalID
-              }) else { return }
+        guard let tab = terminalTab(id: id),
+              let session = terminalSession(
+                  id: tab.focusedTerminalID
+              ) else { return }
         renameRequest = TabRenameRequest(
             tabID: id,
             initialTitle: tab.customTitle ?? "",
@@ -1337,9 +980,9 @@ final class AppModel: ObservableObject {
     }
 
     func saveTabRename(_ request: TabRenameRequest, title: String) {
-        guard let tabIndex = terminalTabs.firstIndex(where: {
-            $0.id == request.tabID
-        }) else {
+        guard let tabIndex = workspaceIndex.tabIndex(
+            id: request.tabID
+        ) else {
             renameRequest = nil
             return
         }
@@ -1444,29 +1087,20 @@ final class AppModel: ObservableObject {
             }
         }
 
-        agentAttentionCancellables[sessionID] = session.terminal
-            .$lastDesktopNotificationAt
-            .compactMap { $0 }
-            .sink { [weak self, weak session] receivedAt in
-                guard let self, let session else { return }
-                self.receiveAgentAttention(
-                    AgentAttentionNotification(
-                        title: session.terminal.lastDesktopNotificationTitle ?? "",
-                        body: session.terminal.lastDesktopNotificationBody ?? "",
-                        receivedAt: receivedAt
-                    ),
-                    from: sessionID,
-                    terminalIsFocused: session.terminal.isFocused
+        agentAttentionCoordinator.bind(
+            to: session,
+            notificationHandler: {
+                [weak self] notification, terminalID, isFocused in
+                self?.receiveAgentAttention(
+                    notification,
+                    from: terminalID,
+                    terminalIsFocused: isFocused
                 )
-            }
-
-        agentAttentionFocusCancellables[sessionID] = session.terminal
-            .$isFocused
-            .removeDuplicates()
-            .filter { $0 }
-            .sink { [weak self] _ in
+            },
+            focusHandler: { [weak self] in
                 self?.clearVisibleAgentAttention()
             }
+        )
 
         let titleChanges = session.terminal
             .$title
@@ -1539,7 +1173,7 @@ final class AppModel: ObservableObject {
     }
 
     private func persistFolders() {
-        defaults.set(folderURLs.map(\.path), forKey: Keys.folderPaths)
+        folderStore.persist(folderURLs)
     }
 
     private func presentFolderAdditionFailures(
@@ -1565,454 +1199,4 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private static func validFolderURL(_ url: URL?) -> URL? {
-        guard let url else { return nil }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(
-            atPath: url.path,
-            isDirectory: &isDirectory
-        ), isDirectory.boolValue else { return nil }
-        return url.resolvingSymlinksInPath().standardizedFileURL
-    }
-
-    private static func isInside(_ url: URL, folder: URL) -> Bool {
-        let path = url.standardizedFileURL.path
-        let folderPath = folder.standardizedFileURL.path
-        let descendantPrefix = folderPath == "/" ? "/" : folderPath + "/"
-        return path == folderPath || path.hasPrefix(descendantPrefix)
-    }
-
-    private static func restoredFolders(
-        from defaults: UserDefaults
-    ) -> [URL] {
-        guard let paths = defaults.stringArray(forKey: Keys.folderPaths) else {
-            return []
-        }
-        var folders: [URL] = []
-        for path in paths {
-            guard let folderURL = validFolderURL(URL(fileURLWithPath: path)),
-                  !folders.contains(where: {
-                      $0.standardizedFileURL.path == folderURL.path
-                  }) else {
-                continue
-            }
-            folders.append(folderURL)
-        }
-        return folders
-    }
-
-    private enum Keys {
-        static let folderPaths = "folders.paths.v1"
-    }
-}
-
-@MainActor
-final class TerminalSession: ObservableObject, Identifiable {
-    struct ProcessSnapshot {
-        let processID: pid_t
-        let parentProcessID: pid_t
-        let processGroupID: pid_t
-        let ttyDevice: UInt64?
-        let terminalForegroundProcessGroupID: pid_t
-        let name: String
-
-        init(
-            processID: pid_t,
-            parentProcessID: pid_t,
-            processGroupID: pid_t,
-            ttyDevice: UInt64?,
-            terminalForegroundProcessGroupID: pid_t? = nil,
-            name: String
-        ) {
-            self.processID = processID
-            self.parentProcessID = parentProcessID
-            self.processGroupID = processGroupID
-            self.ttyDevice = ttyDevice
-            self.terminalForegroundProcessGroupID =
-                terminalForegroundProcessGroupID ?? processGroupID
-            self.name = name
-        }
-    }
-
-    private struct ProcessIdentitySnapshot {
-        let processID: pid_t
-        let parentProcessID: pid_t
-        let processGroupID: pid_t
-        let ttyDevice: UInt64?
-        let terminalForegroundProcessGroupID: pid_t
-    }
-
-    let id = UUID()
-    let workingDirectoryURL: URL
-    let terminal: TerminalViewState
-    let defaultShellName: String
-    var terminalView: TerminalView?
-    @Published var isSearchPresented = false
-    @Published var searchQuery = ""
-    @Published private(set) var searchFocusRequest = 0
-    private var pendingInput: String?
-    private static var cachedProcessSnapshots:
-        (capturedAt: TimeInterval, snapshots: [ProcessIdentitySnapshot])?
-    private static let processSnapshotCacheLifetime: TimeInterval = 0.2
-
-    init(
-        workingDirectoryURL: URL,
-        settings: AppSettings? = nil,
-        defaultShellPath: String? = nil,
-        surfaceContext: TerminalSurfaceContext = .window,
-        initialInput: String? = nil
-    ) {
-        let settings = settings ?? AppSettings()
-        self.workingDirectoryURL = workingDirectoryURL.standardizedFileURL
-        let shellPath = defaultShellPath ?? Self.loginShellPath
-        defaultShellName = Self.processName(
-            from: shellPath
-        ) ?? "shell"
-
-        terminal = TerminalViewState(
-            configSource: settings.ghosttyConfigSource
-        )
-        terminal.configuration = TerminalSurfaceOptions(
-            backend: .exec,
-            workingDirectory: workingDirectoryURL.path,
-            context: surfaceContext
-        )
-        pendingInput = initialInput
-    }
-
-    private var currentForegroundProcess: ProcessSnapshot? {
-        guard let terminalView,
-              let processGroupID = terminalView.foregroundPid,
-              processGroupID > 0,
-              let ttyName = terminalView.ttyName,
-              let ttyDevice = Self.ttyDevice(for: ttyName)
-        else { return nil }
-
-        return Self.resolveForegroundProcess(
-            processGroupID: processGroupID,
-            ttyDevice: ttyDevice,
-            processes: Self.processSnapshots(
-                processGroupID: processGroupID,
-                ttyDevice: ttyDevice
-            )
-        )
-    }
-
-    var currentProcessName: String? {
-        currentForegroundProcess?.name
-    }
-
-    var isRunningForegroundProgram: Bool {
-        runningForegroundProcessName != nil
-    }
-
-    var runningForegroundProcessName: String? {
-        guard let process = currentForegroundProcess,
-              process.name != defaultShellName
-        else { return nil }
-        return process.name
-    }
-
-    func presentSearch() {
-        isSearchPresented = true
-        searchFocusRequest &+= 1
-    }
-
-    func updateSearch(_ query: String) {
-        _ = terminalView?.performBindingAction(
-            TerminalSearchAction.update(query: query)
-        )
-    }
-
-    func navigateSearch(forward: Bool) {
-        guard isSearchPresented else { return }
-        _ = terminalView?.performBindingAction(
-            TerminalSearchAction.navigate(forward: forward)
-        )
-    }
-
-    func dismissSearch() {
-        guard isSearchPresented else { return }
-        _ = terminalView?.performBindingAction(TerminalSearchAction.end)
-        isSearchPresented = false
-    }
-
-    func sendPendingInputIfReady() {
-        guard let pendingInput, terminal.send(pendingInput) else { return }
-        self.pendingInput = nil
-    }
-
-    func displayTitle(
-        terminalTitle: String,
-        foregroundProcessName: String?
-    ) -> String {
-        let processName = foregroundProcessName.flatMap(Self.processName(from:))
-        if processName == defaultShellName { return defaultShellName }
-
-        let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty, !Self.isPathTitle(title) {
-            return title
-        }
-        return processName ?? defaultShellName
-    }
-
-    private static func isPathTitle(_ title: String) -> Bool {
-        title == "~"
-            || title.hasPrefix("~/")
-            || title.hasPrefix("/")
-            || title.hasPrefix("file://")
-    }
-
-    static func resolveForegroundProcess(
-        processGroupID: pid_t,
-        ttyDevice: UInt64,
-        processes: [ProcessSnapshot]
-    ) -> ProcessSnapshot? {
-        guard processGroupID > 0 else { return nil }
-        let candidates = processes.filter {
-            $0.processGroupID == processGroupID
-                && $0.ttyDevice == ttyDevice
-        }
-        guard !candidates.isEmpty else { return nil }
-
-        let processByID = Dictionary(
-            uniqueKeysWithValues: processes.map { ($0.processID, $0) }
-        )
-        let selected: ProcessSnapshot
-        if let leader = candidates.first(where: {
-            $0.processID == processGroupID
-        }), leader.name != "login", !leader.name.isEmpty {
-            selected = leader
-        } else {
-            let usableCandidates = candidates.filter {
-                $0.name != "login" && !$0.name.isEmpty
-            }
-            guard let candidate = usableCandidates.max(by: { lhs, rhs in
-                let lhsDepth = processDepth(lhs, processByID: processByID)
-                let rhsDepth = processDepth(rhs, processByID: processByID)
-                if lhsDepth == rhsDepth {
-                    return lhs.processID < rhs.processID
-                }
-                return lhsDepth < rhsDepth
-            }) else { return nil }
-            selected = candidate
-        }
-
-        let nestedForegroundProcesses = processes.filter { process in
-            guard process.ttyDevice != nil,
-                  process.ttyDevice != ttyDevice,
-                  process.processGroupID
-                    == process.terminalForegroundProcessGroupID,
-                  !process.name.isEmpty
-            else { return false }
-            return isDescendant(
-                process,
-                of: selected.processID,
-                processByID: processByID
-            )
-        }
-
-        return nestedForegroundProcesses.max(by: { lhs, rhs in
-            let lhsDepth = foregroundGroupDepth(
-                lhs,
-                processByID: processByID
-            )
-            let rhsDepth = foregroundGroupDepth(
-                rhs,
-                processByID: processByID
-            )
-            if lhsDepth != rhsDepth { return lhsDepth < rhsDepth }
-
-            let sameGroup = lhs.ttyDevice == rhs.ttyDevice
-                && lhs.processGroupID == rhs.processGroupID
-            if sameGroup {
-                let lhsIsLeader = lhs.processID == lhs.processGroupID
-                    && lhs.name != "login"
-                let rhsIsLeader = rhs.processID == rhs.processGroupID
-                    && rhs.name != "login"
-                if lhsIsLeader != rhsIsLeader { return !lhsIsLeader }
-            }
-            return lhs.processID < rhs.processID
-        }) ?? selected
-    }
-
-    private static func foregroundGroupDepth(
-        _ process: ProcessSnapshot,
-        processByID: [pid_t: ProcessSnapshot]
-    ) -> Int {
-        let groupLeader = processByID[process.processGroupID] ?? process
-        return processDepth(groupLeader, processByID: processByID)
-    }
-
-    private static func isDescendant(
-        _ process: ProcessSnapshot,
-        of ancestorProcessID: pid_t,
-        processByID: [pid_t: ProcessSnapshot]
-    ) -> Bool {
-        var parentProcessID = process.parentProcessID
-        var visited = Set([process.processID])
-        while parentProcessID > 0, !visited.contains(parentProcessID) {
-            if parentProcessID == ancestorProcessID { return true }
-            visited.insert(parentProcessID)
-            guard let parent = processByID[parentProcessID] else {
-                return false
-            }
-            parentProcessID = parent.parentProcessID
-        }
-        return false
-    }
-
-    private static func processDepth(
-        _ process: ProcessSnapshot,
-        processByID: [pid_t: ProcessSnapshot]
-    ) -> Int {
-        var depth = 0
-        var parentProcessID = process.parentProcessID
-        var visited = Set([process.processID])
-        while parentProcessID > 0,
-              !visited.contains(parentProcessID),
-              let parent = processByID[parentProcessID] {
-            visited.insert(parentProcessID)
-            depth += 1
-            parentProcessID = parent.parentProcessID
-        }
-        return depth
-    }
-
-    private static func ttyDevice(for ttyName: String) -> UInt64? {
-        var fileStatus = stat()
-        guard Darwin.lstat(ttyName, &fileStatus) == 0 else { return nil }
-        return UInt64(fileStatus.st_rdev)
-    }
-
-    private static func processSnapshots(
-        processGroupID: pid_t,
-        ttyDevice: UInt64
-    ) -> [ProcessSnapshot] {
-        let identities = processIdentitySnapshots()
-        let rootProcessIDs = identities.compactMap { process in
-            process.processGroupID == processGroupID
-                && process.ttyDevice == ttyDevice
-                ? process.processID
-                : nil
-        }
-        guard !rootProcessIDs.isEmpty else { return [] }
-
-        let childrenByParent = Dictionary(grouping: identities) {
-            $0.parentProcessID
-        }
-        var relevantProcessIDs = Set(rootProcessIDs)
-        var pendingProcessIDs = rootProcessIDs
-        while let parentProcessID = pendingProcessIDs.popLast() {
-            for child in childrenByParent[parentProcessID] ?? []
-            where relevantProcessIDs.insert(child.processID).inserted {
-                pendingProcessIDs.append(child.processID)
-            }
-        }
-
-        return identities.compactMap { process in
-            guard relevantProcessIDs.contains(process.processID) else {
-                return nil
-            }
-            return ProcessSnapshot(
-                processID: process.processID,
-                parentProcessID: process.parentProcessID,
-                processGroupID: process.processGroupID,
-                ttyDevice: process.ttyDevice,
-                terminalForegroundProcessGroupID:
-                    process.terminalForegroundProcessGroupID,
-                name: processName(for: UInt64(process.processID)) ?? ""
-            )
-        }
-    }
-
-    private static func processIdentitySnapshots() -> [ProcessIdentitySnapshot] {
-        let now = ProcessInfo.processInfo.systemUptime
-        if let cache = cachedProcessSnapshots,
-           now - cache.capturedAt < processSnapshotCacheLifetime {
-            return cache.snapshots
-        }
-
-        var query = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
-        var byteCount = 0
-        guard sysctl(&query, u_int(query.count), nil, &byteCount, nil, 0) == 0,
-              byteCount >= MemoryLayout<kinfo_proc>.stride
-        else { return [] }
-
-        var entries = [kinfo_proc](
-            repeating: kinfo_proc(),
-            count: byteCount / MemoryLayout<kinfo_proc>.stride
-        )
-        let result = entries.withUnsafeMutableBytes { buffer in
-            sysctl(
-                &query,
-                u_int(query.count),
-                buffer.baseAddress,
-                &byteCount,
-                nil,
-                0
-            )
-        }
-        guard result == 0 else { return [] }
-
-        let entryCount = min(
-            entries.count,
-            byteCount / MemoryLayout<kinfo_proc>.stride
-        )
-        let snapshots: [ProcessIdentitySnapshot] = entries.prefix(entryCount).compactMap {
-            entry -> ProcessIdentitySnapshot? in
-            let processID = entry.kp_proc.p_pid
-            let ttyDevice = entry.kp_eproc.e_tdev
-            guard processID > 0 else { return nil }
-            return ProcessIdentitySnapshot(
-                processID: processID,
-                parentProcessID: entry.kp_eproc.e_ppid,
-                processGroupID: entry.kp_eproc.e_pgid,
-                ttyDevice: ttyDevice >= 0 ? UInt64(ttyDevice) : nil,
-                terminalForegroundProcessGroupID: entry.kp_eproc.e_tpgid
-            )
-        }
-        cachedProcessSnapshots = (now, snapshots)
-        return snapshots
-    }
-
-    static func processName(for pidValue: UInt64?) -> String? {
-        guard let pidValue, pidValue <= UInt64(Int32.max) else { return nil }
-        let pid = pid_t(pidValue)
-        var pathBuffer = [UInt8](repeating: 0, count: 4096)
-        let pathLength = proc_pidpath(pid, &pathBuffer, UInt32(pathBuffer.count))
-        if pathLength > 0 {
-            let path = String(
-                decoding: pathBuffer.prefix(Int(pathLength)),
-                as: UTF8.self
-            )
-            let name = URL(fileURLWithPath: path).lastPathComponent
-            if !name.isEmpty { return name }
-        }
-
-        var nameBuffer = [CChar](repeating: 0, count: 256)
-        let nameLength = proc_name(pid, &nameBuffer, UInt32(nameBuffer.count))
-        guard nameLength > 0 else { return nil }
-        return String(cString: nameBuffer)
-    }
-
-    private static var loginShellPath: String {
-        if let shellPath = ProcessInfo.processInfo.environment["SHELL"],
-           !shellPath.isEmpty {
-            return shellPath
-        }
-        if let user = getpwuid(getuid()),
-           let shell = user.pointee.pw_shell {
-            return String(cString: shell)
-        }
-        return "shell"
-    }
-
-    private static func processName(from value: String) -> String? {
-        let name = URL(fileURLWithPath: value)
-            .lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        return name.isEmpty ? nil : name
-    }
 }
