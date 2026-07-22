@@ -247,7 +247,7 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testHiddenFolderTracksRefreshingTerminalTitleUntilItStops() throws {
+    func testExpandedFolderDoesNotDuplicateRefreshingTabTitle() throws {
         let (app, folders) = try launchIsolatedApp(
             folderNames: ["First", "Second"]
         )
@@ -283,13 +283,34 @@ final class SpaceUITests: XCTestCase {
 
         let firstFolder = folderRow(at: folders[0])
         let activityValue = "Terminal content is updating"
+        let duplicatedActivity = expectation(
+            for: NSPredicate(
+                format: "value == %@",
+                activityValue
+            ),
+            evaluatedWith: firstFolder
+        )
+        duplicatedActivity.isInverted = true
+        waitForExpectations(timeout: 0.75)
+        XCTAssertNotEqual(
+            firstFolder.value as? String,
+            activityValue
+        )
+        XCTAssertNotEqual(
+            folderRow(at: folders[1]).value as? String,
+            activityValue
+        )
+
+        let disclosureTriangle = app.disclosureTriangles.firstMatch
+        XCTAssertTrue(disclosureTriangle.waitForExistence(timeout: 3))
+        disclosureTriangle.click()
+
         let activityStarts = NSPredicate(
             format: "value == %@",
             activityValue
         )
         expectation(for: activityStarts, evaluatedWith: firstFolder)
-        waitForExpectations(timeout: 3)
-        XCTAssertNotEqual(folderRow(at: folders[1]).value as? String, activityValue)
+        waitForExpectations(timeout: 2)
 
         let activityStops = NSPredicate(
             format: "value != %@",

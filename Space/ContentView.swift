@@ -329,6 +329,7 @@ private struct FolderSidebar: View {
                 FolderRow(
                     folder: value,
                     parentPath: disambiguatingParentPath(for: value),
+                    isExpanded: isExpanded(value),
                     colors: rowColors
                 )
             }
@@ -388,6 +389,7 @@ private struct FolderSidebar: View {
                 parentPath: disambiguatingParentPath(
                     for: folder.wrappedValue
                 ),
+                isExpanded: false,
                 colors: rowColors
             )
             .tag(SidebarSelection.folder(folder.wrappedValue.id))
@@ -485,6 +487,7 @@ private struct FolderRow: View {
     @EnvironmentObject private var model: AppModel
     let folder: Folder
     let parentPath: String?
+    let isExpanded: Bool
     let colors: SidebarRowColors
 
     private var folderPath: String {
@@ -501,7 +504,7 @@ private struct FolderRow: View {
     }
 
     private var terminalActivityFrame: String? {
-        guard !isActive, !needsAgentAttention else { return nil }
+        guard !isExpanded, !isActive, !needsAgentAttention else { return nil }
         return model.folderRefreshingTitleFrame(folder.url)
     }
 
