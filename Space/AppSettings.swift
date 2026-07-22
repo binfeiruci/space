@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
@@ -30,6 +31,8 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppSettings: ObservableObject {
+    static let defaultMemoFilePath = "~/memo.md"
+
     static let ghosttyConfigCandidatePaths = [
         "~/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
         "~/Library/Application Support/com.mitchellh.ghostty/config",
@@ -54,6 +57,9 @@ final class AppSettings: ObservableObject {
     @Published var ghosttyConfigPath: String {
         didSet { defaults.set(ghosttyConfigPath, forKey: Keys.ghosttyConfigPath) }
     }
+    @Published var memoFilePath: String {
+        didSet { defaults.set(memoFilePath, forKey: Keys.memoFilePath) }
+    }
 
     private let defaults: UserDefaults
 
@@ -64,6 +70,8 @@ final class AppSettings: ObservableObject {
         ) ?? .system
         ghosttyConfigPath = defaults.string(forKey: Keys.ghosttyConfigPath)
             ?? Self.defaultGhosttyConfigPath
+        memoFilePath = defaults.string(forKey: Keys.memoFilePath)
+            ?? Self.defaultMemoFilePath
     }
 
     var resolvedGhosttyConfigURL: URL? {
@@ -71,17 +79,12 @@ final class AppSettings: ObservableObject {
     }
 
     var isGhosttyConfigPathValid: Bool {
-        Self.normalizedConfigPath(ghosttyConfigPath).isEmpty
+        Self.normalizedPath(ghosttyConfigPath).isEmpty
             || resolvedGhosttyConfigURL != nil
     }
 
-    var isUsingDefaultGhosttyConfigPath: Bool {
-        Self.normalizedConfigPath(ghosttyConfigPath)
-            == Self.normalizedConfigPath(Self.defaultGhosttyConfigPath)
-    }
-
     private static func resolvedConfigURL(for configPath: String) -> URL? {
-        let path = normalizedConfigPath(configPath)
+        let path = normalizedPath(configPath)
         var isDirectory: ObjCBool = false
         guard !path.isEmpty,
               FileManager.default.fileExists(
@@ -92,24 +95,48 @@ final class AppSettings: ObservableObject {
         return URL(fileURLWithPath: path)
     }
 
-    private static func normalizedConfigPath(_ configPath: String) -> String {
-        NSString(string: configPath)
-            .expandingTildeInPath
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     var ghosttyConfigSource: TerminalController.ConfigSource {
         resolvedGhosttyConfigURL
             .map { .file($0.path) } ?? .none
     }
 
-    func useDefaultGhosttyConfigPath() {
-        ghosttyConfigPath = Self.defaultGhosttyConfigPath
+    var resolvedMemoFileURL: URL? {
+        let path = Self.normalizedPath(memoFilePath)
+        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+    }
+
+    var validMemoFileURL: URL? {
+        guard let fileURL = resolvedMemoFileURL else { return nil }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(
+            atPath: fileURL.path,
+            isDirectory: &isDirectory
+        ) {
+            return isDirectory.boolValue ? nil : fileURL
+        }
+
+        guard FileManager.default.fileExists(
+            atPath: fileURL.deletingLastPathComponent().path,
+            isDirectory: &isDirectory
+        ), isDirectory.boolValue else { return nil }
+        return fileURL
+    }
+
+    var isMemoFilePathValid: Bool {
+        validMemoFileURL != nil
+    }
+
+    private static func normalizedPath(_ value: String) -> String {
+        NSString(string: value)
+            .expandingTildeInPath
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private enum Keys {
         static let appearance = "application.appearance"
         static let ghosttyConfigPath = "terminal.ghosttyConfigPath"
+        static let memoFilePath = "memo.filePath"
     }
 }
 
@@ -120,22 +147,21 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Appearance") {
-                Picker("Color Scheme", selection: $settings.appearance) {
+            Section {
+                Picker("Appearance", selection: $settings.appearance) {
                     ForEach(AppearancePreference.allCases) { appearance in
                         Text(appearance.title).tag(appearance)
                     }
                 }
                 .pickerStyle(.segmented)
-            }
 
-            Section("Terminal Configuration") {
                 HStack {
                     TextField(
-                        "Configuration File",
+                        "Terminal Configuration",
                         text: $settings.ghosttyConfigPath,
                         prompt: Text("Built-in defaults")
                     )
+                    .help("Changes apply to new tabs.")
 
                     Button("Choose…") {
                         isConfigFileImporterPresented = true
@@ -151,14 +177,23 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
                 }
 
-                Text("Changes apply to new tabs.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack {
+                    TextField("Memo File", text: $settings.memoFilePath)
+                        .help("Memo entries are appended to this file.")
 
-                Button("Reset to Default") {
-                    settings.useDefaultGhosttyConfigPath()
+                    Button("Choose…") {
+                        chooseMemoFile()
+                    }
                 }
-                .disabled(settings.isUsingDefaultGhosttyConfigPath)
+
+                if !settings.isMemoFilePathValid {
+                    Label(
+                        "Memo file location is not valid.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                }
             }
         }
         .formStyle(.grouped)
@@ -186,6 +221,18 @@ struct SettingsView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
+    }
+
+    private func chooseMemoFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = settings.resolvedMemoFileURL?
+            .deletingLastPathComponent()
+        panel.prompt = "Choose"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.memoFilePath = url.standardizedFileURL.path
     }
 }
 

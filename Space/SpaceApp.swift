@@ -410,7 +410,7 @@ struct SpaceApp: App {
             CommandGroup(replacing: .saveItem) { }
 
             CommandGroup(after: .pasteboard) {
-                Button("Append Selection to .memo") {
+                Button("Append Selection to Memo") {
                     model.sendActiveSelectionToMemo()
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])

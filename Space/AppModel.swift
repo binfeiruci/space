@@ -32,7 +32,7 @@ final class AppModel: ObservableObject {
 
     private let folderStore: FolderStore
     private let processInspector: any TerminalProcessInspecting
-    private let memoWriter = FolderMemoWriter()
+    private let memoWriter = MemoWriter()
     private let agentAttentionCoordinator = AgentAttentionCoordinator()
     private var workspaceIndex = TerminalWorkspaceIndex()
     private var terminalRuntimeMonitorTask: Task<Void, Never>?
@@ -44,11 +44,10 @@ final class AppModel: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         initialFolderURL: URL? = nil,
-        processInspector: any TerminalProcessInspecting =
-            TerminalProcessInspector()
+        processInspector: (any TerminalProcessInspecting)? = nil
     ) {
         folderStore = FolderStore(defaults: defaults)
-        self.processInspector = processInspector
+        self.processInspector = processInspector ?? TerminalProcessInspector()
         settings = AppSettings(defaults: defaults)
 
         let restoredFolders = folderStore.restore()
@@ -290,18 +289,42 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let folderURL = session.workingDirectoryURL
+        guard let memoFileURL = settings.validMemoFileURL else {
+            alertRequest = AlertRequest(
+                title: "Unable to Update Memo",
+                message: "Choose a valid memo file location in Settings.",
+                confirmationTitle: nil,
+                action: nil
+            )
+            return
+        }
+
+        let fallbackWorkingDirectoryURL = session.currentWorkingDirectoryURL
+        let processInspectionRequest = session.processInspectionRequest
+        let inspector = processInspector
         let writer = memoWriter
         Task { [weak self] in
             do {
-                try await writer.append(selection, in: folderURL)
+                let workingDirectoryURL: URL
+                if let processInspectionRequest,
+                   let inspectedURL = await inspector
+                    .workingDirectoryURL(for: processInspectionRequest) {
+                    workingDirectoryURL = inspectedURL
+                } else {
+                    workingDirectoryURL = fallbackWorkingDirectoryURL
+                }
+                try await writer.append(
+                    selection,
+                    workingDirectoryURL: workingDirectoryURL,
+                    to: memoFileURL
+                )
                 self?.memoSaveNotice = MemoSaveNotice(
-                    message: "Added to .memo",
+                    message: "Added to memo",
                     systemImage: "checkmark"
                 )
             } catch {
                 self?.alertRequest = AlertRequest(
-                    title: "Unable to Update .memo",
+                    title: "Unable to Update Memo",
                     message: error.localizedDescription,
                     confirmationTitle: nil,
                     action: nil

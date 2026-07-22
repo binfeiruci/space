@@ -36,6 +36,12 @@ private actor StubProcessInspector: TerminalProcessInspecting {
         return namesBySessionID
     }
 
+    func workingDirectoryURL(
+        for _: TerminalProcessInspector.Request
+    ) -> URL? {
+        nil
+    }
+
     func setNames(_ names: [UUID: String]) {
         namesBySessionID = names
     }
@@ -260,57 +266,139 @@ struct SpaceTests {
     }
 
     @Test
-    func folderMemoFileCreatesAndAppendsSelections() throws {
+    func memoFileCreatesAndAppendsSelectionsWithWorkingDirectories() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let memoURL = directory.appendingPathComponent(".memo")
+        let memoURL = directory.appendingPathComponent("memo.md")
+        let firstWorkingDirectory = directory.appendingPathComponent("first")
+        let secondWorkingDirectory = directory.appendingPathComponent("second")
 
         let date = Date(timeIntervalSince1970: 0)
         let timeZone = try #require(TimeZone(secondsFromGMT: 0))
-        try FolderMemoFile.append(
+        try MemoFile.append(
             "first note",
+            workingDirectoryURL: firstWorkingDirectory,
             date: date,
             timeZone: timeZone,
-            in: directory
+            to: memoURL
         )
         #expect(try String(contentsOf: memoURL, encoding: .utf8)
-            == "---\n1970-01-01 00:00\n\nfirst note\n\n")
+            == "---\n1970-01-01 00:00\n"
+                + "cwd: \(firstWorkingDirectory.path)\n\nfirst note\n\n")
 
-        try FolderMemoFile.append(
+        try MemoFile.append(
             "second note\nthird line\n",
+            workingDirectoryURL: secondWorkingDirectory,
             date: date,
             timeZone: timeZone,
-            in: directory
+            to: memoURL
         )
         #expect(try String(contentsOf: memoURL, encoding: .utf8)
-            == "---\n1970-01-01 00:00\n\nfirst note\n\n"
-                + "---\n1970-01-01 00:00\n\n"
+            == "---\n1970-01-01 00:00\n"
+                + "cwd: \(firstWorkingDirectory.path)\n\nfirst note\n\n"
+                + "---\n1970-01-01 00:00\n"
+                + "cwd: \(secondWorkingDirectory.path)\n\n"
                 + "second note\nthird line\n\n")
     }
 
     @Test
-    func folderMemoWriterPerformsSerializedBackgroundWrites() async throws {
+    func memoFilePreservesMoreThanTwoTrailingNewlines() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let writer = FolderMemoWriter()
+        let memoURL = directory.appendingPathComponent("memo.md")
+
+        let date = Date(timeIntervalSince1970: 0)
+        let timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        try MemoFile.append(
+            "note\n\n\n",
+            workingDirectoryURL: directory,
+            date: date,
+            timeZone: timeZone,
+            to: memoURL
+        )
+
+        #expect(try String(contentsOf: memoURL, encoding: .utf8)
+            == "---\n1970-01-01 00:00\n"
+                + "cwd: \(directory.path)\n\nnote\n\n\n")
+    }
+
+    @Test
+    func memoWriterPerformsSerializedBackgroundWrites() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let memoURL = directory.appendingPathComponent("memo.md")
+        let writer = MemoWriter()
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for index in 0 ..< 8 {
                 group.addTask {
-                    try await writer.append("entry-\(index)", in: directory)
+                    try await writer.append(
+                        "entry-\(index)",
+                        workingDirectoryURL: directory,
+                        to: memoURL
+                    )
                 }
             }
             try await group.waitForAll()
         }
 
         let contents = try String(
-            contentsOf: directory.appendingPathComponent(".memo"),
+            contentsOf: memoURL,
             encoding: .utf8
         )
         #expect(contents.components(separatedBy: "---\n").count - 1 == 8)
         for index in 0 ..< 8 {
             #expect(contents.contains("entry-\(index)\n\n"))
         }
+    }
+
+    @Test
+    func memoDisplayPathAbbreviatesOnlyTheHomeDirectory() {
+        let home = URL(fileURLWithPath: "/Users/example")
+
+        #expect(MemoFile.displayPath(
+            for: home,
+            homeDirectoryURL: home
+        ) == "~")
+        #expect(MemoFile.displayPath(
+            for: home.appendingPathComponent("code/app/Space"),
+            homeDirectoryURL: home
+        ) == "~/code/app/Space")
+        #expect(MemoFile.displayPath(
+            for: URL(fileURLWithPath: "/Users/example-other/project"),
+            homeDirectoryURL: home
+        ) == "/Users/example-other/project")
+    }
+
+    @Test
+    func terminalWorkingDirectoryUsesReportedPathAndFallsBack() {
+        let fallback = URL(fileURLWithPath: "/fallback")
+        #expect(TerminalSession.workingDirectoryURL(
+            reportedPath: "/tmp/project",
+            fallback: fallback
+        ).path == "/tmp/project")
+        #expect(TerminalSession.workingDirectoryURL(
+            reportedPath: "file:///tmp/a%20project",
+            fallback: fallback
+        ).path == "/tmp/a project")
+        #expect(TerminalSession.workingDirectoryURL(
+            reportedPath: nil,
+            fallback: fallback
+        ) == fallback)
+    }
+
+    @Test
+    func processWorkingDirectoryReadsCurrentProcess() throws {
+        let workingDirectory = try #require(
+            TerminalProcessInspector.processWorkingDirectoryURL(
+                processID: getpid()
+            )
+        )
+        let expected = URL(
+            fileURLWithPath: FileManager.default.currentDirectoryPath
+        ).standardizedFileURL
+
+        #expect(workingDirectory == expected)
     }
 
     @Test @MainActor
@@ -1844,22 +1932,25 @@ struct SpaceTests {
         let folder = FileManager.default.temporaryDirectory
         let defaults = isolatedDefaults(scope: folder)
         let settings = AppSettings(defaults: defaults)
+        let customMemoPath = folder
+            .appendingPathComponent("missing/memo.md")
+            .path
         #expect(
             settings.ghosttyConfigPath
                 == AppSettings.defaultGhosttyConfigPath
         )
-        #expect(settings.isUsingDefaultGhosttyConfigPath)
+        #expect(settings.memoFilePath == AppSettings.defaultMemoFilePath)
+        #expect(settings.isMemoFilePathValid)
         settings.appearance = .dark
         settings.ghosttyConfigPath = "~/terminal/ghostty.conf"
+        settings.memoFilePath = customMemoPath
         #expect(!settings.isGhosttyConfigPathValid)
-        #expect(!settings.isUsingDefaultGhosttyConfigPath)
+        #expect(!settings.isMemoFilePathValid)
 
         let restored = AppSettings(defaults: defaults)
         #expect(restored.appearance == .dark)
         #expect(restored.ghosttyConfigPath == "~/terminal/ghostty.conf")
-        restored.useDefaultGhosttyConfigPath()
-        #expect(restored.isUsingDefaultGhosttyConfigPath)
-        #expect(restored.isGhosttyConfigPathValid)
+        #expect(restored.memoFilePath == customMemoPath)
     }
 
     @Test @MainActor

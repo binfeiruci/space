@@ -70,6 +70,38 @@ final class TerminalSession: ObservableObject, Identifiable {
         return currentProcessName
     }
 
+    var currentWorkingDirectoryURL: URL {
+        Self.workingDirectoryURL(
+            reportedPath: terminal.workingDirectory,
+            fallback: workingDirectoryURL
+        )
+    }
+
+    nonisolated static func workingDirectoryURL(
+        reportedPath: String?,
+        fallback: URL
+    ) -> URL {
+        guard let reportedPath else {
+            return fallback.standardizedFileURL
+        }
+        let path = reportedPath.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if path.hasPrefix("file://"),
+           let fileURL = URL(string: path),
+           fileURL.isFileURL {
+            return fileURL.standardizedFileURL
+        }
+        if path == "~" || path.hasPrefix("~/") {
+            let expandedPath = NSString(string: path).expandingTildeInPath
+            return URL(fileURLWithPath: expandedPath).standardizedFileURL
+        }
+        if path.hasPrefix("/") {
+            return URL(fileURLWithPath: path).standardizedFileURL
+        }
+        return fallback.standardizedFileURL
+    }
+
     func presentSearch() {
         isSearchPresented = true
         searchFocusRequest &+= 1
