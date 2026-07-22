@@ -125,6 +125,52 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testFolderExpansionStatesAreIndependent() throws {
+        let (app, folders) = try launchIsolatedApp(
+            folderNames: ["First", "Second"]
+        )
+        defer { app.terminate() }
+
+        let folderTabs = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        )
+        XCTAssertEqual(folderTabs.count, 1)
+        let firstTabIdentifier = folderTabs.firstMatch.identifier
+
+        let secondFolder = app.descendants(matching: .any)[
+            "folder-row:\(folders[1].path)"
+        ]
+        XCTAssertTrue(secondFolder.waitForExistence(timeout: 3))
+        secondFolder.click()
+
+        let bothFoldersRemainExpanded = NSPredicate {
+            _, _ in folderTabs.count == 2
+        }
+        expectation(for: bothFoldersRemainExpanded, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+        let secondTabIdentifier = try XCTUnwrap(
+            (0..<folderTabs.count)
+                .map { folderTabs.element(boundBy: $0).identifier }
+                .first { $0 != firstTabIdentifier }
+        )
+
+        let disclosure = app.disclosureTriangles.firstMatch
+        XCTAssertTrue(disclosure.waitForExistence(timeout: 3))
+        disclosure.click()
+
+        let firstFolderTabDisappears = NSPredicate {
+            _, _ in !app.images[firstTabIdentifier].exists
+        }
+        expectation(for: firstFolderTabDisappears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+        XCTAssertEqual(folderTabs.count, 1)
+        XCTAssertTrue(app.images[secondTabIdentifier].exists)
+    }
+
+    @MainActor
     func testFirstLaunchCreatesAStandaloneHomeTab() throws {
         let (app, _) = try launchIsolatedApp(folderNames: [])
         defer { app.terminate() }

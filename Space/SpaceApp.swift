@@ -482,13 +482,13 @@ struct SpaceApp: App {
                     model.selectAdjacentTab(offset: -1)
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(model.activeScopeTabs.count < 2)
+                .disabled(model.tabsInSidebarOrder.count < 2)
 
                 Button("Next Tab") {
                     model.selectAdjacentTab(offset: 1)
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(model.activeScopeTabs.count < 2)
+                .disabled(model.tabsInSidebarOrder.count < 2)
 
                 Divider()
 

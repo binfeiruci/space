@@ -134,6 +134,16 @@ final class AppModel: ObservableObject {
         foldersWithTabs + foldersWithoutTabs
     }
 
+    var tabsInSidebarOrder: [TerminalTabState] {
+        let folderTabs = foldersWithTabs.flatMap { folder in
+            let folderPath = folder.url.standardizedFileURL.path
+            return terminalTabs.filter {
+                $0.ownerFolderURL?.standardizedFileURL.path == folderPath
+            }
+        }
+        return standaloneTabs + folderTabs
+    }
+
     var tabGroupCount: Int {
         folders.count + 1
     }
@@ -510,7 +520,7 @@ final class AppModel: ObservableObject {
             focusedTerminalID: session.id
         ))
         if isOpeningFirstTab {
-            moveFolderToEndOfCurrentGroup(folderURL)
+            repositionFolderForTabState(folderURL)
         }
         activeTabID = session.id
         lastActiveTabIDByFolderPath[folderURL.path] = session.id
@@ -555,25 +565,17 @@ final class AppModel: ObservableObject {
         lastActiveStandaloneTabID = session.id
     }
 
-    private func moveFolderToEndOfCurrentGroup(_ folderURL: URL) {
+    private func repositionFolderForTabState(_ folderURL: URL) {
         var orderedFolders = sidebarOrderedFolders
         guard let sourceIndex = orderedFolders.firstIndex(where: {
             $0.url.standardizedFileURL.path == folderURL.path
         }) else { return }
 
-        let hasTabs = folderHasTabs(orderedFolders[sourceIndex])
         let folder = orderedFolders.remove(at: sourceIndex)
-        let insertionIndex: Int
-        if hasTabs {
-            insertionIndex = orderedFolders.lastIndex(where: folderHasTabs)
-                .map { $0 + 1 } ?? 0
-        } else {
-            insertionIndex = orderedFolders.endIndex
-        }
+        let insertionIndex = orderedFolders.lastIndex(where: folderHasTabs)
+            .map { $0 + 1 } ?? 0
         orderedFolders.insert(folder, at: insertionIndex)
-        sidebarFolderPaths = orderedFolders.map {
-            $0.url.standardizedFileURL.path
-        }
+        setFolderOrder(orderedFolders)
     }
 
     func splitActiveTerminal(direction: TerminalSplitDirection) {
@@ -731,7 +733,7 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectTab(at index: Int) -> Bool {
-        let tabs = activeScopeTabs
+        let tabs = tabsInSidebarOrder
         guard tabs.indices.contains(index) else { return false }
         selectTab(tabs[index].id)
         return true
@@ -739,14 +741,14 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectLastTab() -> Bool {
-        guard let tab = activeScopeTabs.last else { return false }
+        guard let tab = tabsInSidebarOrder.last else { return false }
         selectTab(tab.id)
         return true
     }
 
     @discardableResult
     func selectAdjacentTab(offset: Int) -> Bool {
-        let tabs = activeScopeTabs
+        let tabs = tabsInSidebarOrder
         guard tabs.count > 1,
               let activeTab = activeTerminalTab,
               let index = tabs.firstIndex(where: {
@@ -921,7 +923,7 @@ final class AppModel: ObservableObject {
             }
             if !folderStillHasTabs {
                 lastActiveTabIDByFolderPath.removeValue(forKey: folderPath)
-                moveFolderToEndOfCurrentGroup(folderURL)
+                repositionFolderForTabState(folderURL)
             } else if lastActiveTabIDByFolderPath[folderPath]
                 == closingTab.id,
                 !terminalTabs.contains(where: { $0.id == closingTab.id }) {

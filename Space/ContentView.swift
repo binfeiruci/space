@@ -275,7 +275,6 @@ private struct FolderSidebar: View {
                     Section("Tabs") {
                         tabRows(
                             standaloneTabs,
-                            ownerFolderURL: nil,
                             accessibilityPrefix: "standalone-terminal-tab-row:"
                         )
                     }
@@ -297,7 +296,7 @@ private struct FolderSidebar: View {
             .onAppear(perform: expandActiveFolder)
             .onChange(of: model.activeFolderURL) { _, url in
                 guard let url else { return }
-                expandedFolderPaths = [url.standardizedFileURL.path]
+                expandedFolderPaths.insert(url.standardizedFileURL.path)
                 withAnimation(.easeOut(duration: 0.12)) {
                     proxy.scrollTo(
                         sidebarItemID(for: url),
@@ -320,11 +319,12 @@ private struct FolderSidebar: View {
             DisclosureGroup(
                 isExpanded: expansionBinding(for: value)
             ) {
-                tabRows(
-                    folderTabs,
-                    ownerFolderURL: value.url,
-                    accessibilityPrefix: "terminal-tab-row:"
-                )
+                if isExpanded(value) {
+                    tabRows(
+                        folderTabs,
+                        accessibilityPrefix: "terminal-tab-row:"
+                    )
+                }
             } label: {
                 FolderRow(
                     folder: value,
@@ -339,24 +339,17 @@ private struct FolderSidebar: View {
 
     private func tabRows(
         _ tabs: Binding<[TerminalTabState]>,
-        ownerFolderURL: URL?,
         accessibilityPrefix: String
     ) -> some View {
         ForEach(tabs, editActions: .move) { tab in
             let value = tab.wrappedValue
-            let visibleTabs = tabs.wrappedValue
-            let index = visibleTabs.firstIndex { $0.id == value.id } ?? 0
             if let session = model.terminalSession(
                 id: value.focusedTerminalID
             ) {
                 SidebarTerminalTabRow(
                     tab: value,
                     session: session,
-                    shortcutLabel: shortcutLabel(
-                        at: index,
-                        tabCount: visibleTabs.count,
-                        ownerFolderURL: ownerFolderURL
-                    ),
+                    shortcutLabel: shortcutLabel(for: value),
                     accessibilityIdentifier:
                         accessibilityPrefix + value.id.uuidString,
                     colors: rowColors
@@ -432,9 +425,9 @@ private struct FolderSidebar: View {
     private func expansionBinding(for folder: Folder) -> Binding<Bool> {
         let path = folder.url.standardizedFileURL.path
         return Binding(
-            get: { expandedFolderPaths.contains(path) },
-            set: { isExpanded in
-                if isExpanded {
+            get: { isExpanded(folder) },
+            set: { expanded in
+                if expanded {
                     expandedFolderPaths.insert(path)
                 } else {
                     expandedFolderPaths.remove(path)
@@ -443,25 +436,22 @@ private struct FolderSidebar: View {
         )
     }
 
+    private func isExpanded(_ folder: Folder) -> Bool {
+        expandedFolderPaths.contains(folder.url.standardizedFileURL.path)
+    }
+
     private func expandActiveFolder() {
         guard let path = model.activeFolderURL?.standardizedFileURL.path,
               model.activeTerminalTab != nil else { return }
         expandedFolderPaths.insert(path)
     }
 
-    private func shortcutLabel(
-        at index: Int,
-        tabCount: Int,
-        ownerFolderURL: URL?
-    ) -> String? {
-        guard let activeTab = model.activeTerminalTab else { return nil }
-        let activeOwnerPath = activeTab.ownerFolderURL?
-            .standardizedFileURL.path
-        let ownerPath = ownerFolderURL?.standardizedFileURL.path
-        guard activeOwnerPath == ownerPath else { return nil }
-
+    private func shortcutLabel(for tab: TerminalTabState) -> String? {
+        let tabs = model.tabsInSidebarOrder
+        guard let index = tabs.firstIndex(where: { $0.id == tab.id })
+        else { return nil }
         if index < 8 { return "⌘\(index + 1)" }
-        if index == tabCount - 1 { return "⌘9" }
+        if index == tabs.count - 1 { return "⌘9" }
         return nil
     }
 

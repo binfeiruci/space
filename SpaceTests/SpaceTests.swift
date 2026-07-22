@@ -858,16 +858,16 @@ struct SpaceTests {
 
         model.closeTerminal(firstTerminalID)
 
-        #expect(model.folderURLs == [first, second, third])
+        #expect(model.folderURLs == [third, first, second])
         #expect(model.foldersWithTabs.map(\.url) == [third])
-        #expect(model.foldersWithoutTabs.map(\.url) == [second, first])
+        #expect(model.foldersWithoutTabs.map(\.url) == [first, second])
         #expect(model.foldersInSidebarOrder.map(\.url) == [
-            third, second, first,
+            third, first, second,
         ])
     }
 
     @Test @MainActor
-    func folderOpeningFirstTabMovesWithoutPersistingRuntimeOrder() throws {
+    func folderTabGroupingPersistsSidebarOrder() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         let directories = ["First", "Second", "Third"].map {
@@ -906,7 +906,7 @@ struct SpaceTests {
             directories[0], directories[2], directories[1],
         ])
         #expect(model.folderURLs == [
-            directories[1], directories[0], directories[2],
+            directories[0], directories[2], directories[1],
         ])
         #expect(model.foldersInSidebarOrder.map(\.url) == [
             directories[0], directories[2], directories[1],
@@ -914,10 +914,10 @@ struct SpaceTests {
 
         let restored = AppModel(defaults: defaults)
         #expect(restored.folderURLs == [
-            directories[1], directories[0], directories[2],
+            directories[0], directories[2], directories[1],
         ])
         #expect(restored.foldersInSidebarOrder.map(\.url) == [
-            directories[1], directories[0], directories[2],
+            directories[0], directories[2], directories[1],
         ])
     }
 
@@ -1400,6 +1400,53 @@ struct SpaceTests {
 
         #expect(model.activeTerminalID == lastID)
         #expect(model.activeFolderSessions.count == 10)
+    }
+
+    @Test @MainActor
+    func tabNavigationUsesGlobalSidebarOrder() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let first = container.appendingPathComponent(
+            "First",
+            isDirectory: true
+        )
+        let second = container.appendingPathComponent(
+            "Second",
+            isDirectory: true
+        )
+        for folder in [first, second] {
+            try FileManager.default.createDirectory(
+                at: folder,
+                withIntermediateDirectories: true
+            )
+        }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: container),
+            initialFolderURL: first
+        )
+        let firstFolderFirstTabID = try #require(model.activeTabID)
+        model.openNewTerminal(for: first)
+        let firstFolderLastTabID = try #require(model.activeTabID)
+        model.addFolder(second)
+        let secondFolderTabID = try #require(model.activeTabID)
+        model.openNewStandaloneTerminal()
+        let standaloneTabID = try #require(model.activeTabID)
+
+        #expect(model.selectTab(at: 0))
+        #expect(model.activeTabID == standaloneTabID)
+        #expect(model.selectTab(at: 1))
+        #expect(model.activeTabID == firstFolderFirstTabID)
+        #expect(model.selectLastTab())
+        #expect(model.activeTabID == secondFolderTabID)
+        model.selectTab(firstFolderLastTabID)
+
+        #expect(model.selectAdjacentTab(offset: 1))
+        #expect(model.activeTabID == secondFolderTabID)
+        #expect(model.selectAdjacentTab(offset: 1))
+        #expect(model.activeTabID == standaloneTabID)
+        #expect(model.selectAdjacentTab(offset: -1))
+        #expect(model.activeTabID == secondFolderTabID)
     }
 
     @Test @MainActor
