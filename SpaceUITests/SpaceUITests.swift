@@ -182,7 +182,7 @@ final class SpaceUITests: XCTestCase {
             )
         ).firstMatch
         XCTAssertTrue(standaloneTab.waitForExistence(timeout: 3))
-        XCTAssertFalse(app.staticTexts["No Tabs"].exists)
+        XCTAssertFalse(app.staticTexts["Other Folders"].exists)
     }
 
     @MainActor

@@ -287,7 +287,7 @@ private struct FolderSidebar: View {
                 }
 
                 if !foldersWithoutTabs.wrappedValue.isEmpty {
-                    Section("No Tabs") {
+                    Section("Other Folders") {
                         folderRows(foldersWithoutTabs)
                     }
                 }
