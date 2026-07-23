@@ -271,24 +271,27 @@ private struct FolderSidebar: View {
         ScrollViewReader { proxy in
             List(selection: selection) {
                 let standaloneTabs = tabs(ownerFolderURL: nil)
-                if !standaloneTabs.isEmpty {
+                if !standaloneTabs.isEmpty || !foldersWithTabs.isEmpty {
                     Section("Tabs") {
-                        tabRows(
-                            standaloneTabs,
-                            accessibilityPrefix: "standalone-terminal-tab-row:"
-                        )
-                    }
-                }
+                        if !standaloneTabs.isEmpty {
+                            tabRows(
+                                standaloneTabs,
+                                accessibilityPrefix: "standalone-terminal-tab-row:"
+                            )
+                        }
 
-                if !foldersWithTabs.isEmpty {
-                    Section {
-                        tabbedFolderRows(foldersWithTabs)
+                        if !foldersWithTabs.isEmpty {
+                            tabbedFolderRows(foldersWithTabs)
+                        }
                     }
                 }
 
                 if !foldersWithoutTabs.isEmpty {
-                    Section("Other Folders") {
+                    Section {
                         folderRows(foldersWithoutTabs)
+                    } header: {
+                        Text("Other Folders")
+                            .padding(.top)
                     }
                 }
             }
