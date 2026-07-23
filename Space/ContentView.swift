@@ -259,19 +259,19 @@ private struct FolderSidebar: View {
         )
     }
 
-    private var foldersWithTabs: Binding<[Folder]> {
-        groupedFolders(hasTabs: true)
+    private var foldersWithTabs: [Folder] {
+        model.foldersWithTabs
     }
 
-    private var foldersWithoutTabs: Binding<[Folder]> {
-        groupedFolders(hasTabs: false)
+    private var foldersWithoutTabs: [Folder] {
+        model.foldersWithoutTabs
     }
 
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: selection) {
                 let standaloneTabs = tabs(ownerFolderURL: nil)
-                if !standaloneTabs.wrappedValue.isEmpty {
+                if !standaloneTabs.isEmpty {
                     Section("Tabs") {
                         tabRows(
                             standaloneTabs,
@@ -280,13 +280,13 @@ private struct FolderSidebar: View {
                     }
                 }
 
-                if !foldersWithTabs.wrappedValue.isEmpty {
+                if !foldersWithTabs.isEmpty {
                     Section {
                         tabbedFolderRows(foldersWithTabs)
                     }
                 }
 
-                if !foldersWithoutTabs.wrappedValue.isEmpty {
+                if !foldersWithoutTabs.isEmpty {
                     Section("Other Folders") {
                         folderRows(foldersWithoutTabs)
                     }
@@ -311,15 +311,14 @@ private struct FolderSidebar: View {
     }
 
     private func tabbedFolderRows(
-        _ folders: Binding<[Folder]>
+        _ folders: [Folder]
     ) -> some View {
-        ForEach(folders, editActions: .move) { folder in
-            let value = folder.wrappedValue
-            let folderTabs = tabs(ownerFolderURL: value.url)
+        ForEach(folders) { folder in
+            let folderTabs = tabs(ownerFolderURL: folder.url)
             DisclosureGroup(
-                isExpanded: expansionBinding(for: value)
+                isExpanded: expansionBinding(for: folder)
             ) {
-                if isExpanded(value) {
+                if isExpanded(folder) {
                     tabRows(
                         folderTabs,
                         accessibilityPrefix: "terminal-tab-row:"
@@ -327,97 +326,135 @@ private struct FolderSidebar: View {
                 }
             } label: {
                 FolderRow(
-                    folder: value,
-                    parentPath: disambiguatingParentPath(for: value),
-                    isExpanded: isExpanded(value),
+                    folder: folder,
+                    parentPath: disambiguatingParentPath(for: folder),
+                    isExpanded: isExpanded(folder),
                     colors: rowColors
                 )
             }
-            .tag(SidebarSelection.folder(value.id))
-            .id(sidebarItemID(for: value.url))
+            .tag(SidebarSelection.folder(folder.id))
+            .id(sidebarItemID(for: folder.url))
+        }
+        .onMove { source, destination in
+            moveFolders(
+                folders,
+                hasTabs: true,
+                fromOffsets: source,
+                toOffset: destination
+            )
         }
     }
 
     private func tabRows(
-        _ tabs: Binding<[TerminalTabState]>,
+        _ tabs: [TerminalTabState],
         accessibilityPrefix: String
     ) -> some View {
-        ForEach(tabs, editActions: .move) { tab in
-            let value = tab.wrappedValue
+        ForEach(tabs) { tab in
             if let session = model.terminalSession(
-                id: value.focusedTerminalID
+                id: tab.focusedTerminalID
             ) {
                 SidebarTerminalTabRow(
-                    tab: value,
+                    tab: tab,
                     session: session,
-                    shortcutLabel: shortcutLabel(for: value),
+                    shortcutLabel: shortcutLabel(for: tab),
                     accessibilityIdentifier:
-                        accessibilityPrefix + value.id.uuidString,
+                        accessibilityPrefix + tab.id.uuidString,
                     colors: rowColors
                 )
-                .tag(SidebarSelection.tab(value.id))
-                .id(sidebarTabID(value.id))
+                .tag(SidebarSelection.tab(tab.id))
+                .id(sidebarTabID(tab.id))
             }
+        }
+        .onMove { source, destination in
+            moveTabs(
+                tabs,
+                fromOffsets: source,
+                toOffset: destination
+            )
         }
     }
 
-    private func groupedFolders(
-        hasTabs: Bool
-    ) -> Binding<[Folder]> {
-        Binding(
-            get: {
-                hasTabs ? model.foldersWithTabs : model.foldersWithoutTabs
+    private func moveFolders(
+        _ folders: [Folder],
+        hasTabs: Bool,
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) {
+        model.setFolderOrder(reordering(
+            folders,
+            within: model.foldersInSidebarOrder,
+            matching: { model.folderHasTabs($0) == hasTabs },
+            fromOffsets: source,
+            toOffset: destination
+        ))
+    }
+
+    private func moveTabs(
+        _ tabs: [TerminalTabState],
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) {
+        let ownerPath = tabs.first?.ownerFolderURL?.standardizedFileURL.path
+        let allTabs = reordering(
+            tabs,
+            within: model.terminalTabs,
+            matching: {
+                $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
             },
-            set: { reorderedFolders in
-                var reordered = reorderedFolders.makeIterator()
-                let allFolders = model.foldersInSidebarOrder.map { folder in
-                    guard model.folderHasTabs(folder) == hasTabs
-                    else { return folder }
-                    return reordered.next() ?? folder
-                }
-                model.setFolderOrder(allFolders)
-            }
+            fromOffsets: source,
+            toOffset: destination
         )
+        model.setTabOrder(allTabs.map(\.id))
+    }
+
+    private func reordering<Element>(
+        _ groupedElements: [Element],
+        within allElements: [Element],
+        matching predicate: (Element) -> Bool,
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) -> [Element] {
+        var reorderedElements = groupedElements
+        reorderedElements.move(
+            fromOffsets: source,
+            toOffset: destination
+        )
+        var reordered = reorderedElements.makeIterator()
+        return allElements.map { element in
+            predicate(element) ? reordered.next() ?? element : element
+        }
     }
 
     private func folderRows(
-        _ folders: Binding<[Folder]>
+        _ folders: [Folder]
     ) -> some View {
-        ForEach(folders, editActions: .move) { folder in
+        ForEach(folders) { folder in
             FolderRow(
-                folder: folder.wrappedValue,
-                parentPath: disambiguatingParentPath(
-                    for: folder.wrappedValue
-                ),
+                folder: folder,
+                parentPath: disambiguatingParentPath(for: folder),
                 isExpanded: false,
                 colors: rowColors
             )
-            .tag(SidebarSelection.folder(folder.wrappedValue.id))
-            .id(sidebarItemID(for: folder.wrappedValue.url))
+            .tag(SidebarSelection.folder(folder.id))
+            .id(sidebarItemID(for: folder.url))
+        }
+        .onMove { source, destination in
+            moveFolders(
+                folders,
+                hasTabs: false,
+                fromOffsets: source,
+                toOffset: destination
+            )
         }
     }
 
     private func tabs(
         ownerFolderURL: URL?
-    ) -> Binding<[TerminalTabState]> {
+    ) -> [TerminalTabState] {
         let ownerPath = ownerFolderURL?.standardizedFileURL.path
-        return Binding(
-            get: {
-                model.terminalTabs.filter {
-                    $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
-                }
-            },
-            set: { reorderedTabs in
-                var reordered = reorderedTabs.makeIterator()
-                let allTabs = model.terminalTabs.map { tab in
-                    guard tab.ownerFolderURL?.standardizedFileURL.path
-                            == ownerPath
-                    else { return tab }
-                    return reordered.next() ?? tab
-                }
-                model.setTabOrder(allTabs.map(\.id))
-            }
-        )
+        return model.terminalTabs.filter {
+            $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
+        }
     }
 
     private var rowColors: SidebarRowColors {
