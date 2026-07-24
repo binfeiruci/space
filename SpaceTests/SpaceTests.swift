@@ -539,7 +539,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func visibleAgentNotificationDoesNotCreateAttention() throws {
+    func agentAttentionRequestsActivationOnlyWhenNotVisible() throws {
         defer { removeIsolatedDefaults() }
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -552,6 +552,10 @@ struct SpaceTests {
             title: "Codex",
             body: "Input required"
         )
+        var requestedTerminalID: UUID?
+        model.agentAttentionHandler = {
+            requestedTerminalID = $0
+        }
 
         model.receiveAgentAttention(
             notification,
@@ -560,6 +564,7 @@ struct SpaceTests {
             applicationIsActive: true
         )
         #expect(model.agentAttentionByTerminalID.isEmpty)
+        #expect(requestedTerminalID == nil)
 
         model.receiveAgentAttention(
             notification,
@@ -568,6 +573,7 @@ struct SpaceTests {
             applicationIsActive: false
         )
         #expect(model.agentAttentionByTerminalID[terminalID] == notification)
+        #expect(requestedTerminalID == terminalID)
     }
 
     @Test @MainActor

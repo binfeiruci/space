@@ -1,34 +1,16 @@
 import AppKit
 import SwiftUI
-import UserNotifications
 
 @MainActor
-final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
-    UNUserNotificationCenterDelegate {
+final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
     private var applicationShortcutMonitor: Any?
     private var terminationCheckTask: Task<Void, Never>?
 
-    func installApplicationShortcutMonitor(for model: AppModel) {
+    func installApplicationHandlers(for model: AppModel) {
         self.model = model
-        UNUserNotificationCenter.current().delegate = self
-        model.agentAttentionHandler = {
-            [weak self] terminalID, folderURL, notification in
-            self?.deliverAgentAttentionNotification(
-                terminalID: terminalID,
-                folderURL: folderURL,
-                notification: notification
-            )
-        }
-        model.agentAttentionClearedHandler = { terminalID in
-            let center = UNUserNotificationCenter.current()
-            let identifier = Self.agentAttentionIdentifier(
-                for: terminalID
-            )
-            center.removePendingNotificationRequests(
-                withIdentifiers: [identifier]
-            )
-            center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        model.agentAttentionHandler = { [weak self] terminalID in
+            self?.activateForAgentAttention(terminalID: terminalID)
         }
         guard applicationShortcutMonitor == nil else { return }
 
@@ -69,7 +51,6 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
         terminationCheckTask = nil
         model?.stopTerminalRuntimeMonitoring()
         model?.agentAttentionHandler = nil
-        model?.agentAttentionClearedHandler = nil
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -86,76 +67,10 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate,
         return true
     }
 
-    func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse
-    ) async {
-        guard let value = response.notification.request.content.userInfo[
-            "terminalID"
-        ] as? String,
-            let terminalID = UUID(uuidString: value)
-        else { return }
-
-        model?.selectTerminal(terminalID)
+    private func activateForAgentAttention(terminalID: UUID) {
+        guard !NSApp.isActive, let model else { return }
+        model.selectTerminal(terminalID)
         NSApp.activate(ignoringOtherApps: true)
-    }
-
-    private func deliverAgentAttentionNotification(
-        terminalID: UUID,
-        folderURL: URL,
-        notification: AgentAttentionNotification
-    ) {
-        guard !NSApp.isActive else { return }
-
-        Task {
-            let center = UNUserNotificationCenter.current()
-            let settings = await center.notificationSettings()
-            let isAuthorized: Bool
-            switch settings.authorizationStatus {
-            case .authorized, .provisional:
-                isAuthorized = true
-            case .notDetermined:
-                isAuthorized = (try? await center.requestAuthorization(
-                    options: [.alert, .sound]
-                )) == true
-            case .denied, .ephemeral:
-                isAuthorized = false
-            @unknown default:
-                isAuthorized = false
-            }
-            guard isAuthorized,
-                  model?.agentAttentionByTerminalID[terminalID]?.id
-                    == notification.id else { return }
-
-            let content = UNMutableNotificationContent()
-            let title = notification.title.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            let body = notification.body.trimmingCharacters(
-                in: .whitespacesAndNewlines
-            )
-            content.title = title.isEmpty ? "Agent needs attention" : title
-            content.body = body.isEmpty
-                ? Folder(url: folderURL).displayName
-                : body
-            content.sound = .default
-            content.userInfo = ["terminalID": terminalID.uuidString]
-
-            let identifier = Self.agentAttentionIdentifier(for: terminalID)
-            center.removePendingNotificationRequests(
-                withIdentifiers: [identifier]
-            )
-            center.removeDeliveredNotifications(withIdentifiers: [identifier])
-            try? await center.add(UNNotificationRequest(
-                identifier: identifier,
-                content: content,
-                trigger: nil
-            ))
-        }
-    }
-
-    private static func agentAttentionIdentifier(for terminalID: UUID) -> String {
-        "space.agent-attention.\(terminalID.uuidString)"
     }
 
     func applicationShouldTerminate(
@@ -338,7 +253,7 @@ struct SpaceApp: App {
                     .environmentObject(model)
                     .onAppear {
                         model.startTerminalRuntimeMonitoring()
-                        appDelegate.installApplicationShortcutMonitor(
+                        appDelegate.installApplicationHandlers(
                             for: model
                         )
                     }

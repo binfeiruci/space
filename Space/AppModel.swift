@@ -37,9 +37,7 @@ final class AppModel: ObservableObject {
         UnreadTitleActivityEvent?
 
     let settings: AppSettings
-    var agentAttentionHandler:
-        ((UUID, URL, AgentAttentionNotification) -> Void)?
-    var agentAttentionClearedHandler: ((UUID) -> Void)?
+    var agentAttentionHandler: ((UUID) -> Void)?
     var closeWindowHandler: (() -> Void)?
 
     private let folderStore: FolderStore
@@ -263,12 +261,10 @@ final class AppModel: ObservableObject {
     private func monitorTerminalRuntime() async {
         while !Task.isCancelled {
             let applicationIsActive = NSApp.isActive
-            if applicationIsActive {
-                let visibleTerminalIDs = Set(activeTabTerminalIDs)
-                for session in terminalSessions
-                where !visibleTerminalIDs.contains(session.id) {
-                    session.terminal.controller.tick()
-                }
+            let displayedTerminalIDs = Set(activeTabTerminalIDs)
+            for session in terminalSessions
+            where !displayedTerminalIDs.contains(session.id) {
+                session.terminal.controller.tick()
             }
 
             await refreshTerminalProcessNames()
@@ -780,7 +776,7 @@ final class AppModel: ObservableObject {
         terminalIsFocused: Bool,
         applicationIsActive: Bool
     ) {
-        guard let session = terminalSession(id: terminalID) else { return }
+        guard terminalSession(id: terminalID) != nil else { return }
 
         if applicationIsActive,
            activeTerminalID == terminalID,
@@ -790,11 +786,7 @@ final class AppModel: ObservableObject {
         }
 
         agentAttentionByTerminalID[terminalID] = notification
-        agentAttentionHandler?(
-            terminalID,
-            session.workingDirectoryURL,
-            notification
-        )
+        agentAttentionHandler?(terminalID)
     }
 
     func clearVisibleAgentAttention() {
@@ -1243,10 +1235,7 @@ final class AppModel: ObservableObject {
     }
 
     private func clearAgentAttention(for terminalID: UUID) {
-        guard agentAttentionByTerminalID.removeValue(
-            forKey: terminalID
-        ) != nil else { return }
-        agentAttentionClearedHandler?(terminalID)
+        agentAttentionByTerminalID.removeValue(forKey: terminalID)
     }
 
     private func persistFolders() {

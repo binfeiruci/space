@@ -11,12 +11,27 @@ import XCTest
 
 final class SpaceUITests: XCTestCase {
     private var temporaryContainers: [URL] = []
+    private var previousInputSource: TISInputSource?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        previousInputSource = TISCopyCurrentKeyboardInputSource()
+            .takeRetainedValue()
+        let englishInputSource = TISCopyCurrentASCIICapableKeyboardInputSource()
+            .takeRetainedValue()
+        XCTAssertEqual(TISSelectInputSource(englishInputSource), noErr)
+    }
 
     override func tearDownWithError() throws {
+        if let previousInputSource {
+            XCTAssertEqual(TISSelectInputSource(previousInputSource), noErr)
+            self.previousInputSource = nil
+        }
         for container in temporaryContainers {
             try? FileManager.default.removeItem(at: container)
         }
         temporaryContainers.removeAll()
+        try super.tearDownWithError()
     }
 
     @MainActor
@@ -253,14 +268,6 @@ final class SpaceUITests: XCTestCase {
         )
         defer { app.terminate() }
 
-        let previousInputSource = TISCopyCurrentKeyboardInputSource()
-            .takeRetainedValue()
-        let englishInputSource = TISCopyCurrentASCIICapableKeyboardInputSource()
-            .takeRetainedValue()
-        XCTAssertEqual(TISSelectInputSource(englishInputSource), noErr)
-        defer {
-            _ = TISSelectInputSource(previousInputSource)
-        }
         let terminalPane = app.descendants(matching: .any)[
             "terminal-split-pane"
         ]
@@ -340,6 +347,42 @@ final class SpaceUITests: XCTestCase {
             evaluatedWith: refreshingTab
         )
         waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
+    func testBackgroundTabAgentAttentionBringsSpaceToForeground() throws {
+        let (app, _) = try launchIsolatedApp()
+        defer { app.terminate() }
+
+        let terminalPane = app.descendants(matching: .any)[
+            "terminal-split-pane"
+        ]
+        XCTAssertTrue(terminalPane.waitForExistence(timeout: 3))
+        let folderTabs = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        )
+        XCTAssertEqual(folderTabs.count, 1)
+        let notifyingTabIdentifier = folderTabs.firstMatch.identifier
+        app.typeText(
+            "(sleep 3; printf '\\033]777;notify;Codex;"
+                + "Approval needed\\007') &"
+        )
+        app.typeKey(.return, modifierFlags: [])
+        app.typeKey("t", modifierFlags: .command)
+        let secondTabAppears = NSPredicate { _, _ in folderTabs.count == 2 }
+        expectation(for: secondTabAppears, evaluatedWith: nil)
+        waitForExpectations(timeout: 3)
+
+        XCUIApplication(bundleIdentifier: "com.apple.finder").activate()
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 3))
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 6))
+        XCTAssertEqual(
+            app.images[notifyingTabIdentifier].value as? String,
+            "Selected"
+        )
     }
 
     @MainActor
