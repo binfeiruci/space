@@ -595,6 +595,88 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func completedBackgroundTitleActivityMarksTabUnreadUntilSelected()
+        async throws
+    {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: directory),
+            initialFolderURL: directory
+        )
+        let backgroundTab = try #require(model.activeTerminalTab)
+        let backgroundSession = try #require(model.activeTerminalSession)
+
+        model.openNewTerminal(for: directory)
+        #expect(model.activeTabID != backgroundTab.id)
+
+        backgroundSession.terminal.terminalDidChangeTitle("⠋ Working")
+        backgroundSession.terminal.terminalDidChangeTitle("⠙ Working")
+        #expect(model.tabIsRefreshingTitle(backgroundTab.id))
+        #expect(!model.tabHasUnreadTitleActivity(backgroundTab.id))
+
+        try await Task.sleep(for: .seconds(1.1))
+
+        #expect(!model.tabIsRefreshingTitle(backgroundTab.id))
+        #expect(model.tabHasUnreadTitleActivity(backgroundTab.id))
+        #expect(model.latestUnreadTitleActivity?.tabID == backgroundTab.id)
+
+        model.selectTab(backgroundTab.id)
+
+        #expect(!model.tabHasUnreadTitleActivity(backgroundTab.id))
+    }
+
+    @Test @MainActor
+    func completedCurrentTabTitleActivityDoesNotMarkItUnread() async throws {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: directory),
+            initialFolderURL: directory
+        )
+        let tab = try #require(model.activeTerminalTab)
+        let session = try #require(model.activeTerminalSession)
+
+        session.terminal.terminalDidChangeTitle("⠋ Working")
+        session.terminal.terminalDidChangeTitle("⠙ Working")
+        try await Task.sleep(for: .seconds(1.1))
+
+        #expect(!model.tabHasUnreadTitleActivity(tab.id))
+        #expect(model.latestUnreadTitleActivity == nil)
+    }
+
+    @Test @MainActor
+    func activatingFolderClearsAutomaticallySelectedTabUnreadState()
+        async throws
+    {
+        defer { removeIsolatedDefaults() }
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: directory),
+            initialFolderURL: directory
+        )
+        let folderTab = try #require(model.activeTerminalTab)
+        let folderSession = try #require(model.activeTerminalSession)
+
+        model.openNewStandaloneTerminal()
+        #expect(model.activeTabID != folderTab.id)
+
+        folderSession.terminal.terminalDidChangeTitle("⠋ Working")
+        folderSession.terminal.terminalDidChangeTitle("⠙ Working")
+        try await Task.sleep(for: .seconds(1.1))
+
+        #expect(model.tabHasUnreadTitleActivity(folderTab.id))
+
+        model.activateFolder(directory)
+
+        #expect(model.activeTabID == folderTab.id)
+        #expect(!model.tabHasUnreadTitleActivity(folderTab.id))
+    }
+
+    @Test @MainActor
     func folderImporterPresentationIsDrivenByAppState() {
         defer { removeIsolatedDefaults() }
         let defaults = isolatedDefaults(

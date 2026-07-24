@@ -247,7 +247,7 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testExpandedFolderDoesNotDuplicateRefreshingTabTitle() throws {
+    func testCollapsedFolderShowsCompletedTitleActivityAsUnread() throws {
         let (app, folders) = try launchIsolatedApp(
             folderNames: ["First", "Second"]
         )
@@ -265,6 +265,14 @@ final class SpaceUITests: XCTestCase {
             "terminal-split-pane"
         ]
         XCTAssertTrue(terminalPane.waitForExistence(timeout: 3))
+        let folderTabs = app.images.matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-row:"
+            )
+        )
+        XCTAssertEqual(folderTabs.count, 1)
+        let refreshingTabIdentifier = folderTabs.firstMatch.identifier
         app.typeText(
             "for i in {1..15}; do printf '\\033]0;%s\\007' \"$i\"; "
                 + "sleep 0.2; done"
@@ -312,12 +320,26 @@ final class SpaceUITests: XCTestCase {
         expectation(for: activityStarts, evaluatedWith: firstFolder)
         waitForExpectations(timeout: 2)
 
-        let activityStops = NSPredicate(
-            format: "value != %@",
-            activityValue
+        let unreadValue = "Unread terminal activity"
+        let activityBecomesUnread = NSPredicate(
+            format: "value == %@",
+            unreadValue
         )
-        expectation(for: activityStops, evaluatedWith: firstFolder)
+        expectation(for: activityBecomesUnread, evaluatedWith: firstFolder)
         waitForExpectations(timeout: 5)
+
+        disclosureTriangle.click()
+        let folderUnreadClears = NSPredicate(
+            format: "value != %@",
+            unreadValue
+        )
+        expectation(for: folderUnreadClears, evaluatedWith: firstFolder)
+        let refreshingTab = app.images[refreshingTabIdentifier]
+        expectation(
+            for: NSPredicate(format: "value == %@", unreadValue),
+            evaluatedWith: refreshingTab
+        )
+        waitForExpectations(timeout: 3)
     }
 
     @MainActor

@@ -4,6 +4,11 @@ import CoreGraphics
 import Foundation
 import GhosttyTerminal
 
+struct UnreadTitleActivityEvent: Equatable {
+    let tabID: UUID
+    private let occurrenceID = UUID()
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var folders: [Folder]
@@ -14,7 +19,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var terminalTabs: [TerminalTabState] {
         willSet { workspaceIndex.indexTabs(newValue) }
     }
-    @Published private(set) var activeTabID: UUID?
+    @Published private(set) var activeTabID: UUID? {
+        didSet {
+            markActiveTabRead()
+        }
+    }
     @Published private(set) var alertRequest: AlertRequest?
     @Published private(set) var renameRequest: TabRenameRequest?
     @Published private(set) var memoSaveNotice: MemoSaveNotice?
@@ -23,6 +32,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var agentAttentionByTerminalID:
         [UUID: AgentAttentionNotification] = [:]
     @Published private var refreshingTitleFrameByTerminalID: [UUID: String] = [:]
+    @Published private(set) var unreadTitleTabIDs: Set<UUID> = []
+    @Published private(set) var latestUnreadTitleActivity:
+        UnreadTitleActivityEvent?
 
     let settings: AppSettings
     var agentAttentionHandler:
@@ -145,6 +157,13 @@ final class AppModel: ObservableObject {
 
     var tabGroupCount: Int {
         folders.count + 1
+    }
+
+    var unreadTitleFolderPaths: Set<String> {
+        Set(terminalTabs.compactMap { tab in
+            guard unreadTitleTabIDs.contains(tab.id) else { return nil }
+            return tab.ownerFolderURL?.standardizedFileURL.path
+        })
     }
 
     private var sidebarOrderedFolders: [Folder] {
@@ -449,6 +468,7 @@ final class AppModel: ObservableObject {
         terminalTabs.removeAll {
             $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
+        unreadTitleTabIDs.subtract(removedTabIDs)
         recentlyClosedTerminalLocations.removeAll {
             $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
@@ -675,6 +695,17 @@ final class AppModel: ObservableObject {
         return latestAgentAttentionTerminalID(in: tab.terminalIDs) != nil
     }
 
+    func tabHasUnreadTitleActivity(_ id: UUID) -> Bool {
+        unreadTitleTabIDs.contains(id)
+    }
+
+    func tabIsRefreshingTitle(_ id: UUID) -> Bool {
+        guard let tab = terminalTab(id: id) else { return false }
+        return tab.terminalIDs.contains {
+            refreshingTitleFrameByTerminalID[$0] != nil
+        }
+    }
+
     func folderNeedsAgentAttention(_ url: URL) -> Bool {
         latestAgentAttentionTerminalID(in: url.standardizedFileURL) != nil
     }
@@ -705,9 +736,29 @@ final class AppModel: ObservableObject {
     ) {
         if let frame {
             refreshingTitleFrameByTerminalID[terminalID] = frame
-        } else {
-            refreshingTitleFrameByTerminalID.removeValue(forKey: terminalID)
+            return
         }
+        guard refreshingTitleFrameByTerminalID.removeValue(
+            forKey: terminalID
+        ) != nil else { return }
+        completeUnreadTitleActivity(for: terminalID)
+    }
+
+    private func markActiveTabRead() {
+        guard let activeTabID else { return }
+        unreadTitleTabIDs.remove(activeTabID)
+    }
+
+    private func completeUnreadTitleActivity(for terminalID: UUID) {
+        guard let tabIndex = terminalTabIndex(containing: terminalID) else {
+            return
+        }
+        let tabID = terminalTabs[tabIndex].id
+        guard tabID != activeTabID else { return }
+        unreadTitleTabIDs.insert(tabID)
+        latestUnreadTitleActivity = UnreadTitleActivityEvent(
+            tabID: tabID
+        )
     }
 
     func receiveAgentAttention(
@@ -933,6 +984,7 @@ final class AppModel: ObservableObject {
             }
         } else {
             terminalTabs.remove(at: tabIndex)
+            unreadTitleTabIDs.remove(closingTab.id)
         }
         terminalSessions.remove(at: sessionIndex)
         if activeTabID == closingTab.id,

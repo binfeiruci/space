@@ -234,9 +234,24 @@ private struct SidebarRowColors {
     }
 }
 
+private struct SidebarStatusDot: View {
+    let color: Color
+    let label: String
+    let identifier: String
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .frame(width: 6, height: 6)
+            .accessibilityLabel(label)
+            .accessibilityIdentifier(identifier)
+    }
+}
+
 private struct FolderSidebar: View {
     @EnvironmentObject private var model: AppModel
     @State private var expandedFolderPaths: Set<String> = []
+    @State private var unreadCollapsedFolderPaths: Set<String> = []
 
     private var selection: Binding<SidebarSelection?> {
         Binding(
@@ -299,7 +314,7 @@ private struct FolderSidebar: View {
             .onAppear(perform: expandActiveFolder)
             .onChange(of: model.activeFolderURL) { _, url in
                 guard let url else { return }
-                expandedFolderPaths.insert(url.standardizedFileURL.path)
+                expandFolder(at: url.standardizedFileURL.path)
                 withAnimation(.easeOut(duration: 0.12)) {
                     proxy.scrollTo(
                         sidebarItemID(for: url),
@@ -309,6 +324,15 @@ private struct FolderSidebar: View {
             }
             .onChange(of: model.activeTerminalTab?.id) { _, _ in
                 expandActiveFolder()
+            }
+            .onChange(of: model.latestUnreadTitleActivity) {
+                _, activity in
+                recordUnreadTitleActivity(activity)
+            }
+            .onChange(of: model.unreadTitleTabIDs) { _, _ in
+                unreadCollapsedFolderPaths.formIntersection(
+                    model.unreadTitleFolderPaths
+                )
             }
         }
     }
@@ -332,6 +356,10 @@ private struct FolderSidebar: View {
                     folder: folder,
                     parentPath: disambiguatingParentPath(for: folder),
                     isExpanded: isExpanded(folder),
+                    hasUnreadTitleActivity:
+                        unreadCollapsedFolderPaths.contains(
+                            folder.url.standardizedFileURL.path
+                        ),
                     colors: rowColors
                 )
             }
@@ -436,6 +464,7 @@ private struct FolderSidebar: View {
                 folder: folder,
                 parentPath: disambiguatingParentPath(for: folder),
                 isExpanded: false,
+                hasUnreadTitleActivity: false,
                 colors: rowColors
             )
             .tag(SidebarSelection.folder(folder.id))
@@ -470,7 +499,7 @@ private struct FolderSidebar: View {
             get: { isExpanded(folder) },
             set: { expanded in
                 if expanded {
-                    expandedFolderPaths.insert(path)
+                    expandFolder(at: path)
                 } else {
                     expandedFolderPaths.remove(path)
                 }
@@ -485,7 +514,23 @@ private struct FolderSidebar: View {
     private func expandActiveFolder() {
         guard let path = model.activeFolderURL?.standardizedFileURL.path,
               model.activeTerminalTab != nil else { return }
+        expandFolder(at: path)
+    }
+
+    private func expandFolder(at path: String) {
         expandedFolderPaths.insert(path)
+        unreadCollapsedFolderPaths.remove(path)
+    }
+
+    private func recordUnreadTitleActivity(
+        _ activity: UnreadTitleActivityEvent?
+    ) {
+        guard let activity,
+              let tab = model.terminalTab(id: activity.tabID),
+              let path = tab.ownerFolderURL?.standardizedFileURL.path,
+              !expandedFolderPaths.contains(path)
+        else { return }
+        unreadCollapsedFolderPaths.insert(path)
     }
 
     private func shortcutLabel(for tab: TerminalTabState) -> String? {
@@ -528,6 +573,7 @@ private struct FolderRow: View {
     let folder: Folder
     let parentPath: String?
     let isExpanded: Bool
+    let hasUnreadTitleActivity: Bool
     let colors: SidebarRowColors
 
     private var folderPath: String {
@@ -546,6 +592,21 @@ private struct FolderRow: View {
     private var terminalActivityFrame: String? {
         guard !isExpanded, !isActive, !needsAgentAttention else { return nil }
         return model.folderRefreshingTitleFrame(folder.url)
+    }
+
+    private var showsUnreadIndicator: Bool {
+        !isExpanded
+            && !isActive
+            && !needsAgentAttention
+            && terminalActivityFrame == nil
+            && hasUnreadTitleActivity
+    }
+
+    private var accessibilityValue: String {
+        if terminalActivityFrame != nil {
+            return "Terminal content is updating"
+        }
+        return showsUnreadIndicator ? "Unread terminal activity" : ""
     }
 
     var body: some View {
@@ -581,21 +642,24 @@ private struct FolderRow: View {
             Spacer(minLength: 4)
 
             if needsAgentAttention {
-                Circle()
-                    .fill(.orange)
-                    .accessibilityLabel("Agent needs attention")
-                    .accessibilityIdentifier(
-                        "agent-attention-folder:\(folderPath)"
-                    )
+                SidebarStatusDot(
+                    color: .orange,
+                    label: "Agent needs attention",
+                    identifier: "agent-attention-folder:\(folderPath)"
+                )
+            } else if showsUnreadIndicator {
+                SidebarStatusDot(
+                    color: .accentColor,
+                    label: "Unread terminal activity",
+                    identifier: "unread-title-folder:\(folderPath)"
+                )
             }
         }
         .contentShape(Rectangle())
         .help(folder.url.path)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Switch to folder \(folder.displayName)")
-        .accessibilityValue(
-            terminalActivityFrame == nil ? "" : "Terminal content is updating"
-        )
+        .accessibilityValue(accessibilityValue)
         .accessibilityIdentifier(
             "folder-row:\(folderPath)"
         )
@@ -653,6 +717,24 @@ private struct SidebarTerminalTabRow: View {
         )
     }
 
+    private var needsAgentAttention: Bool {
+        model.tabNeedsAgentAttention(tab.id)
+    }
+
+    private var showsUnreadIndicator: Bool {
+        model.activeTerminalTab?.id != tab.id
+            && !needsAgentAttention
+            && !model.tabIsRefreshingTitle(tab.id)
+            && model.tabHasUnreadTitleActivity(tab.id)
+    }
+
+    private var accessibilityValue: String {
+        if model.activeTerminalTab?.id == tab.id {
+            return "Selected"
+        }
+        return showsUnreadIndicator ? "Unread terminal activity" : ""
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             Button {
@@ -677,14 +759,18 @@ private struct SidebarTerminalTabRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            if model.tabNeedsAgentAttention(tab.id) {
-                Image(systemName: "circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .accessibilityLabel("Agent needs attention")
-                    .accessibilityIdentifier(
-                        "agent-attention-tab:\(tab.id.uuidString)"
-                    )
+            if needsAgentAttention {
+                SidebarStatusDot(
+                    color: .orange,
+                    label: "Agent needs attention",
+                    identifier: "agent-attention-tab:\(tab.id.uuidString)"
+                )
+            } else if showsUnreadIndicator {
+                SidebarStatusDot(
+                    color: .accentColor,
+                    label: "Unread terminal activity",
+                    identifier: "unread-title-tab:\(tab.id.uuidString)"
+                )
             }
 
             Spacer(minLength: 4)
@@ -698,9 +784,7 @@ private struct SidebarTerminalTabRow: View {
         .contentShape(Rectangle())
         .help(title)
         .accessibilityLabel(title)
-        .accessibilityValue(
-            model.activeTerminalTab?.id == tab.id ? "Selected" : ""
-        )
+        .accessibilityValue(accessibilityValue)
         .accessibilityIdentifier(accessibilityIdentifier)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
