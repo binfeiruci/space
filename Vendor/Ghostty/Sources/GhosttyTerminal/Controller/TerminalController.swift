@@ -8,12 +8,7 @@
 import Darwin
 import Foundation
 import GhosttyKit
-
-#if canImport(UIKit)
-    import UIKit
-#elseif canImport(AppKit)
-    import AppKit
-#endif
+import AppKit
 
 /// Manages the Ghostty app lifecycle, configuration loading, and surface
 /// creation.

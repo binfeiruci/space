@@ -6,11 +6,7 @@
 //
 
 import SwiftUI
-#if canImport(UIKit)
-    import UIKit
-#elseif canImport(AppKit)
-    import AppKit
-#endif
+import AppKit
 
 @MainActor
 struct TerminalViewRepresentable {
@@ -39,23 +35,14 @@ struct TerminalViewRepresentable {
         guard let binding else { return }
 
         DispatchQueue.main.async { [weak view] in
-            #if canImport(UIKit)
-                guard let view, view.window != nil else { return }
-                if binding.isFocused {
-                    if !view.isFirstResponder { view.becomeFirstResponder() }
-                } else if view.isFirstResponder {
-                    _ = view.resignFirstResponder()
+            guard let view, let window = view.window else { return }
+            if binding.isFocused {
+                if window.firstResponder !== view {
+                    window.makeFirstResponder(view)
                 }
-            #elseif canImport(AppKit)
-                guard let view, let window = view.window else { return }
-                if binding.isFocused {
-                    if window.firstResponder !== view {
-                        window.makeFirstResponder(view)
-                    }
-                } else if window.firstResponder === view {
-                    window.makeFirstResponder(nil)
-                }
-            #endif
+            } else if window.firstResponder === view {
+                window.makeFirstResponder(nil)
+            }
         }
     }
 }

@@ -5,12 +5,6 @@
 //  Created by Lakr233 on 2026/3/16.
 //
 
-#if canImport(UIKit)
-    import UIKit
+import AppKit
 
-    public typealias TerminalView = UITerminalView
-#elseif canImport(AppKit)
-    import AppKit
-
-    public typealias TerminalView = AppTerminalView
-#endif
+public typealias TerminalView = AppTerminalView

@@ -11,7 +11,7 @@
 //  drift from upstream keyboard/IME semantics.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if canImport(AppKit)
     import AppKit
     import GhosttyKit
 
@@ -26,12 +26,6 @@
             inputMethodHandler = TerminalTextInputHandler(view: view)
         }
 
-        nonisolated static func shouldUseDirectInput(
-            modifierFlags: NSEvent.ModifierFlags
-        ) -> Bool {
-            modifierFlags.intersection([.shift, .control, .option, .command]).isEmpty
-        }
-
         nonisolated static func shouldReplayInterpretedCommand(
             _ selector: Selector
         ) -> Bool {
@@ -44,10 +38,6 @@
 
         func handleKeyDown(with event: NSEvent) {
             guard let view, let surface = view.surface else { return }
-
-            if handleDirectInputIfNeeded(event) {
-                return
-            }
 
             let action: ghostty_input_action_e = event.isARepeat
                 ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
@@ -106,9 +96,6 @@
 
         func handleKeyUp(with event: NSEvent) {
             guard let view, let surface = view.surface else { return }
-            if shouldBypassGhosttyForDirectInput(event) {
-                return
-            }
             var input = event.buildKeyInput(action: GHOSTTY_ACTION_RELEASE)
             input.text = nil
             surface.sendKeyEvent(input)
@@ -184,32 +171,6 @@
                 input.text = ptr
                 surface.sendKeyEvent(input)
             }
-        }
-
-        private func handleDirectInputIfNeeded(_ event: NSEvent) -> Bool {
-            guard let view else { return false }
-            // During IME composition, AppKit needs to keep ownership of editing
-            // commands so marked text can shrink, cancel, and move correctly.
-            guard inputMethodHandler?.hasMarkedText != true else { return false }
-            guard Self.shouldUseDirectInput(modifierFlags: event.modifierFlags) else {
-                return false
-            }
-            let delivery = TerminalHardwareKeyRouter.routeAppKit(
-                keyCode: event.keyCode,
-                backend: view.configuration.backend
-            )
-            return delivery.isDirectInput
-        }
-
-        private func shouldBypassGhosttyForDirectInput(_ event: NSEvent) -> Bool {
-            guard let view else { return false }
-            guard Self.shouldUseDirectInput(modifierFlags: event.modifierFlags) else {
-                return false
-            }
-            return TerminalHardwareKeyRouter.routeAppKit(
-                keyCode: event.keyCode,
-                backend: view.configuration.backend
-            ).isDirectInput
         }
 
         private func translatedEvent(

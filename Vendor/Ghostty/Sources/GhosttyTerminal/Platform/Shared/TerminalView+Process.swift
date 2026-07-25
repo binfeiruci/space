@@ -2,10 +2,8 @@
 //  TerminalView+Process.swift
 //  libghostty-spm
 //
-//  Public read access to the pty's foreground process, available on both
-//  AppKit (`AppTerminalView`) and UIKit (`UITerminalView`) hosts via the
-//  `TerminalView` typealias. Both concrete views expose the same internal
-//  `surface` accessor, so a single extension covers every platform.
+//  Public read access to the pty's foreground process, exposed by the
+//  AppKit `AppTerminalView` through the `TerminalView` typealias.
 //
 
 import Foundation

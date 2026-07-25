@@ -22,7 +22,6 @@ extension TerminalController {
         var surfaceConfig = ghostty_surface_config_new()
         surfaceConfig.userdata = Unmanaged.passUnretained(bridge).toOpaque()
         surfaceConfig.context = configuration.context.ghosttyValue
-        configureBackend(&surfaceConfig, from: configuration)
 
         if let fontSize = configuration.fontSize {
             surfaceConfig.font_size = fontSize
@@ -31,7 +30,6 @@ extension TerminalController {
         return finalizeSurface(
             app: app,
             bridge: bridge,
-            configuration: configuration,
             config: &surfaceConfig,
             workingDirectory: configuration.workingDirectory,
             platformSetup: platformSetup
@@ -50,15 +48,9 @@ extension TerminalController {
         retainedBridges.count
     }
 
-    private func configureBackend(
-        _: inout ghostty_surface_config_s,
-        from _: TerminalSurfaceOptions
-    ) {}
-
     private func finalizeSurface(
         app: ghostty_app_t,
         bridge: TerminalCallbackBridge,
-        configuration: TerminalSurfaceOptions,
         config: inout ghostty_surface_config_s,
         workingDirectory: String?,
         platformSetup: (inout ghostty_surface_config_s) -> Void
@@ -67,7 +59,6 @@ extension TerminalController {
             return buildSurface(
                 app: app,
                 bridge: bridge,
-                configuration: configuration,
                 config: &config,
                 platformSetup: platformSetup
             )
@@ -78,7 +69,6 @@ extension TerminalController {
             return buildSurface(
                 app: app,
                 bridge: bridge,
-                configuration: configuration,
                 config: &config,
                 platformSetup: platformSetup
             )
@@ -88,7 +78,6 @@ extension TerminalController {
     private func buildSurface(
         app: ghostty_app_t,
         bridge: TerminalCallbackBridge,
-        configuration: TerminalSurfaceOptions,
         config: inout ghostty_surface_config_s,
         platformSetup: (inout ghostty_surface_config_s) -> Void
     ) -> ghostty_surface_t? {

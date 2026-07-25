@@ -81,17 +81,6 @@ struct SpaceTests {
     }
 
     @Test
-    func terminalInputMethodRectCorrectsLibghosttyCellOffset() {
-        let rect = LibghosttyInputMethodWorkaround.correctedAnchorRect(
-            NSRect(x: 120, y: 260, width: 4, height: 20)
-        )
-
-        #expect(rect == NSRect(x: 120, y: 280, width: 4, height: 20))
-        #expect(LibghosttyInputMethodWorkaround.correctedAnchorRect(.zero)
-            == .zero)
-    }
-
-    @Test
     func quitPromptOnlyAppearsForRunningPrograms() {
         let idlePrompt = ApplicationTerminationPrompt(runningProgramNames: [])
         let singlePrompt = ApplicationTerminationPrompt(

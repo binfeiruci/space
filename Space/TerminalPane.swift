@@ -525,34 +525,11 @@ private final class SpaceTerminalView: TerminalView {
         super.mouseDown(with: event)
     }
 
-    override func firstRect(
-        forCharacterRange range: NSRange,
-        actualRange: NSRangePointer?
-    ) -> NSRect {
-        LibghosttyInputMethodWorkaround.correctedAnchorRect(
-            super.firstRect(
-                forCharacterRange: range,
-                actualRange: actualRange
-            )
-        )
-    }
-
     private func applyFocusRequest() {
         guard let window else { return }
         window.initialFirstResponder = self
         if window.firstResponder !== self {
             window.makeFirstResponder(self)
         }
-    }
-}
-
-enum LibghosttyInputMethodWorkaround {
-    static func correctedAnchorRect(_ rect: NSRect) -> NSRect {
-        guard rect != .zero else { return rect }
-
-        // libghostty-spm subtracts the cell height when converting Ghostty's
-        // top-edge IME point to AppKit coordinates. Undo only that offset and
-        // leave candidate-window placement to the input method.
-        return rect.offsetBy(dx: 0, dy: rect.height)
     }
 }

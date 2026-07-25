@@ -8,7 +8,7 @@
 import Foundation
 import GhosttyKit
 
-/// Shared terminal state and logic used by both UIKit and AppKit views.
+/// Shared terminal state and logic used by AppKit views.
 ///
 /// Platform views own a `TerminalSurfaceCoordinator` instance and set platform-specific
 /// hooks via closures. The core handles surface lifecycle, metrics

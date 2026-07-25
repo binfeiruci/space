@@ -263,19 +263,10 @@ extension TerminalViewportMetrics {
     }
 }
 
-extension TerminalSessionBackend {
-    var debugSummary: String {
-        switch self {
-        case .exec:
-            "exec"
-        }
-    }
-}
-
 extension TerminalSurfaceOptions {
     var debugSummary: String {
         let fontSizeDescription = fontSize.map { String($0) } ?? "nil"
-        return "backend=\(backend.debugSummary) fontSize=\(fontSizeDescription) workingDirectory=\(workingDirectory ?? "nil") context=\(context.debugSummary)"
+        return "fontSize=\(fontSizeDescription) workingDirectory=\(workingDirectory ?? "nil") context=\(context.debugSummary)"
     }
 }
 
@@ -286,17 +277,6 @@ extension TerminalSurfaceContext {
             "window"
         case .split:
             "split"
-        }
-    }
-}
-
-extension TerminalHardwareKeyDelivery {
-    var debugSummary: String {
-        switch self {
-        case let .ghostty(key):
-            "ghostty(\(key.rawValue))"
-        case let .data(data):
-            "data(\(TerminalDebugLog.describe(data)))"
         }
     }
 }

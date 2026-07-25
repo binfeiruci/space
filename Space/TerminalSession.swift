@@ -34,7 +34,6 @@ final class TerminalSession: ObservableObject, Identifiable {
             configSource: settings.ghosttyConfigSource
         )
         terminal.configuration = TerminalSurfaceOptions(
-            backend: .exec,
             workingDirectory: workingDirectoryURL.path,
             context: surfaceContext
         )

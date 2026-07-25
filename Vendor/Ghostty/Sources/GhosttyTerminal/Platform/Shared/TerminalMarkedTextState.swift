@@ -1,7 +1,6 @@
 import Foundation
 
-/// Owns the platform-agnostic state for IME marked text so AppKit and UIKit
-/// can share one editing model.
+/// Owns the state for AppKit IME marked text.
 struct TerminalMarkedTextState {
     private(set) var text: String?
     private(set) var selectedRange = NSRange(location: 0, length: 0)

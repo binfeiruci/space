@@ -6,7 +6,7 @@
 //  inject bytes into the pty without reaching for internal API.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if canImport(AppKit)
     import AppKit
 
     extension AppTerminalView {

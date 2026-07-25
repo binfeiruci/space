@@ -5,12 +5,7 @@
 
 import Foundation
 import GhosttyKit
-
-#if canImport(UIKit)
-    import UIKit
-#elseif canImport(AppKit)
-    import AppKit
-#endif
+import AppKit
 
 private enum TerminalCallbacks {
     static func wakeup(userdata: UnsafeMutableRawPointer?) {
@@ -68,13 +63,9 @@ private enum TerminalCallbacks {
         guard let data = content.data else { return }
         let string = String(cString: data)
 
-        #if canImport(UIKit)
-            UIPasteboard.general.string = string
-        #elseif canImport(AppKit)
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(string, forType: .string)
-        #endif
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
     }
 
     static func readClipboard(
@@ -89,11 +80,7 @@ private enum TerminalCallbacks {
             .takeUnretainedValue()
         guard let surface = bridge.rawSurface else { return false }
 
-        #if canImport(UIKit)
-            let string = UIPasteboard.general.string
-        #elseif canImport(AppKit)
-            let string = NSPasteboard.general.string(forType: .string)
-        #endif
+        let string = NSPasteboard.general.string(forType: .string)
 
         guard let string else {
             TerminalDebugLog.log(.input, "clipboard paste read empty")

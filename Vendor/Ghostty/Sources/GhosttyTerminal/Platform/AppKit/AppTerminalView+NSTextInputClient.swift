@@ -5,7 +5,7 @@
 //  Created by Lakr233 on 2026/3/17.
 //
 
-#if canImport(AppKit) && !canImport(UIKit)
+#if canImport(AppKit)
     import AppKit
 
     extension AppTerminalView: @preconcurrency NSTextInputClient {
@@ -65,7 +65,7 @@
             let point = surface.imePoint()
             let viewRect = NSRect(
                 x: point.x,
-                y: bounds.height - point.y - point.height,
+                y: bounds.height - point.y,
                 width: point.width,
                 height: point.height
             )
