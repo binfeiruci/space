@@ -1,0 +1,24 @@
+# Space Ghostty integration
+
+This package contains the Swift/AppKit adapter that lets Space use the
+locally built Ghostty C library.
+
+`GhosttyKit.xcframework` and `Sources/GhosttyTerminal/Resources` are generated
+from the same Ghostty commit and intentionally ignored by Git. Bootstrap or
+upgrade both artifacts together from the repository root:
+
+```sh
+Scripts/bootstrap-ghostty.sh
+```
+
+The default is the latest commit on Ghostty's `main` branch. Pass a tag or
+commit to reproduce a specific version:
+
+```sh
+Scripts/bootstrap-ghostty.sh "$(cat Vendor/Ghostty/GHOSTTY_COMMIT)"
+```
+
+The script requires an arm64 Mac, Xcode command-line tools, Zig, Git, and
+`tic`. It keeps the Ghostty checkout in `.build/ghostty-source`, installs an
+arm64-only XCFramework, replaces the matching runtime resources, and writes
+the resolved commit to `GHOSTTY_COMMIT`.

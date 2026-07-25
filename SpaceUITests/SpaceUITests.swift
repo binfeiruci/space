@@ -128,8 +128,14 @@ final class SpaceUITests: XCTestCase {
         expectation(for: secondTabAppears, evaluatedWith: nil)
         waitForExpectations(timeout: 3)
 
-        let firstTab = app.images[folderTabs.element(boundBy: 0).identifier]
-        let secondTab = app.images[folderTabs.element(boundBy: 1).identifier]
+        let firstTab = element(
+            in: app.images,
+            identifier: folderTabs.element(boundBy: 0).identifier
+        )
+        let secondTab = element(
+            in: app.images,
+            identifier: folderTabs.element(boundBy: 1).identifier
+        )
 
         for _ in 0 ..< 5 {
             firstTab.click()
@@ -155,9 +161,10 @@ final class SpaceUITests: XCTestCase {
         XCTAssertEqual(folderTabs.count, 1)
         let firstTabIdentifier = folderTabs.firstMatch.identifier
 
-        let secondFolder = app.descendants(matching: .any)[
-            "folder-row:\(folders[1].path)"
-        ]
+        let secondFolder = element(
+            in: app.descendants(matching: .any),
+            identifier: "folder-row:\(folders[1].path)"
+        )
         XCTAssertTrue(secondFolder.waitForExistence(timeout: 3))
         secondFolder.click()
 
@@ -177,12 +184,20 @@ final class SpaceUITests: XCTestCase {
         disclosure.click()
 
         let firstFolderTabDisappears = NSPredicate {
-            _, _ in !app.images[firstTabIdentifier].exists
+            _, _ in !self.element(
+                in: app.images,
+                identifier: firstTabIdentifier
+            ).exists
         }
         expectation(for: firstFolderTabDisappears, evaluatedWith: nil)
         waitForExpectations(timeout: 3)
         XCTAssertEqual(folderTabs.count, 1)
-        XCTAssertTrue(app.images[secondTabIdentifier].exists)
+        XCTAssertTrue(
+            element(
+                in: app.images,
+                identifier: secondTabIdentifier
+            ).exists
+        )
     }
 
     @MainActor
@@ -341,7 +356,10 @@ final class SpaceUITests: XCTestCase {
             unreadValue
         )
         expectation(for: folderUnreadClears, evaluatedWith: firstFolder)
-        let refreshingTab = app.images[refreshingTabIdentifier]
+        let refreshingTab = element(
+            in: app.images,
+            identifier: refreshingTabIdentifier
+        )
         expectation(
             for: NSPredicate(format: "value == %@", unreadValue),
             evaluatedWith: refreshingTab
@@ -380,7 +398,10 @@ final class SpaceUITests: XCTestCase {
         XCTAssertTrue(app.wait(for: .runningBackground, timeout: 3))
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 6))
         XCTAssertEqual(
-            app.images[notifyingTabIdentifier].value as? String,
+            element(
+                in: app.images,
+                identifier: notifyingTabIdentifier
+            ).value as? String,
             "Selected"
         )
     }
@@ -394,24 +415,26 @@ final class SpaceUITests: XCTestCase {
 
         let secondIdentifier = "folder-row:\(folders[1].path)"
         let thirdIdentifier = "folder-row:\(folders[2].path)"
-        let second = app.descendants(matching: .any)[
-            secondIdentifier
-        ]
-        let third = app.descendants(matching: .any)[
-            thirdIdentifier
-        ]
+        let second = element(
+            in: app.descendants(matching: .any),
+            identifier: secondIdentifier
+        )
+        let third = element(
+            in: app.descendants(matching: .any),
+            identifier: thirdIdentifier
+        )
         XCTAssertTrue(second.waitForExistence(timeout: 3))
         XCTAssertTrue(third.exists)
 
         let rows = app.outlines.firstMatch.cells
-        let secondRow = rows.containing(
-            .any,
-            identifier: secondIdentifier
-        ).firstMatch
-        let thirdRow = rows.containing(
-            .any,
-            identifier: thirdIdentifier
-        ).firstMatch
+        let secondRow = row(
+            in: rows,
+            nearestTo: second
+        )
+        let thirdRow = row(
+            in: rows,
+            nearestTo: third
+        )
         XCTAssertTrue(secondRow.exists)
         XCTAssertTrue(thirdRow.exists)
         let source = thirdRow.coordinate(
@@ -448,9 +471,10 @@ final class SpaceUITests: XCTestCase {
         let (app, folders) = try launchIsolatedApp()
         defer { app.terminate() }
 
-        let folder = app.descendants(matching: .any)[
-            "folder-row:\(folders[0].path)"
-        ]
+        let folder = element(
+            in: app.descendants(matching: .any),
+            identifier: "folder-row:\(folders[0].path)"
+        )
         XCTAssertTrue(folder.waitForExistence(timeout: 3))
         folder.rightClick()
         let newTabItems = app.menuItems.matching(identifier: "New Tab")
@@ -481,17 +505,11 @@ final class SpaceUITests: XCTestCase {
 
         let firstIdentifier = tabs.element(boundBy: 0).identifier
         let secondIdentifier = tabs.element(boundBy: 1).identifier
-        let first = app.images[firstIdentifier]
-        let second = app.images[secondIdentifier]
+        let first = element(in: app.images, identifier: firstIdentifier)
+        let second = element(in: app.images, identifier: secondIdentifier)
         let rows = app.outlines.firstMatch.cells
-        let firstRow = rows.containing(
-            .any,
-            identifier: firstIdentifier
-        ).firstMatch
-        let secondRow = rows.containing(
-            .any,
-            identifier: secondIdentifier
-        ).firstMatch
+        let firstRow = row(in: rows, nearestTo: first)
+        let secondRow = row(in: rows, nearestTo: second)
         XCTAssertTrue(firstRow.exists)
         XCTAssertTrue(secondRow.exists)
 
@@ -510,6 +528,32 @@ final class SpaceUITests: XCTestCase {
         let draggedTabIsVisibleAgain = NSPredicate(format: "hittable == true")
         expectation(for: draggedTabIsVisibleAgain, evaluatedWith: second)
         waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
+    private func element(
+        in query: XCUIElementQuery,
+        identifier: String
+    ) -> XCUIElement {
+        query.matching(identifierPredicate(identifier)).firstMatch
+    }
+
+    private func identifierPredicate(_ identifier: String) -> NSPredicate {
+        NSPredicate(format: "identifier == %@", identifier)
+    }
+
+    @MainActor
+    private func row(
+        in rows: XCUIElementQuery,
+        nearestTo element: XCUIElement
+    ) -> XCUIElement {
+        let elements = (0 ..< rows.count).map {
+            rows.element(boundBy: $0)
+        }
+        return elements.min {
+            abs($0.frame.midY - element.frame.midY)
+                < abs($1.frame.midY - element.frame.midY)
+        } ?? rows.element(boundBy: rows.count)
     }
 
     @MainActor

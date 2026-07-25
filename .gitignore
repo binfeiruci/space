@@ -2,3 +2,8 @@ DerivedData/
 .build/
 **/.DS_Store
 **/xcuserdata/
+
+# Generated locally from the matching Ghostty commit.
+/Vendor/Ghostty/GhosttyKit.xcframework/
+/Vendor/Ghostty/Sources/GhosttyTerminal/Resources/
+/Vendor/Ghostty/.swiftpm/
