@@ -282,6 +282,10 @@ private struct FolderSidebar: View {
         model.foldersWithoutTabs
     }
 
+    private var tabbedFolderIDs: [String] {
+        model.foldersWithTabs.map(\.id).sorted()
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             List(selection: selection) {
@@ -310,6 +314,7 @@ private struct FolderSidebar: View {
                     }
                 }
             }
+            .id(tabbedFolderIDs)
             .listStyle(.sidebar)
             .onAppear(perform: expandActiveFolder)
             .onChange(of: model.activeFolderURL) { _, url in
