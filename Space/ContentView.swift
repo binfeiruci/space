@@ -278,10 +278,6 @@ private struct FolderSidebar: View {
         model.foldersWithTabs
     }
 
-    private var foldersWithoutTabs: [Folder] {
-        model.foldersWithoutTabs
-    }
-
     private var tabbedFolderIDs: [String] {
         model.foldersWithTabs.map(\.id).sorted()
     }
@@ -302,15 +298,6 @@ private struct FolderSidebar: View {
                         if !foldersWithTabs.isEmpty {
                             tabbedFolderRows(foldersWithTabs)
                         }
-                    }
-                }
-
-                if !foldersWithoutTabs.isEmpty {
-                    Section {
-                        folderRows(foldersWithoutTabs)
-                    } header: {
-                        Text("Other Folders")
-                            .padding(.top)
                     }
                 }
             }
@@ -374,7 +361,6 @@ private struct FolderSidebar: View {
         .onMove { source, destination in
             moveFolders(
                 folders,
-                hasTabs: true,
                 fromOffsets: source,
                 toOffset: destination
             )
@@ -412,14 +398,13 @@ private struct FolderSidebar: View {
 
     private func moveFolders(
         _ folders: [Folder],
-        hasTabs: Bool,
         fromOffsets source: IndexSet,
         toOffset destination: Int
     ) {
         model.setFolderOrder(reordering(
             folders,
-            within: model.foldersInSidebarOrder,
-            matching: { model.folderHasTabs($0) == hasTabs },
+            within: model.trackedFoldersInOrder,
+            matching: model.folderHasTabs,
             fromOffsets: source,
             toOffset: destination
         ))
@@ -458,30 +443,6 @@ private struct FolderSidebar: View {
         var reordered = reorderedElements.makeIterator()
         return allElements.map { element in
             predicate(element) ? reordered.next() ?? element : element
-        }
-    }
-
-    private func folderRows(
-        _ folders: [Folder]
-    ) -> some View {
-        ForEach(folders) { folder in
-            FolderRow(
-                folder: folder,
-                parentPath: disambiguatingParentPath(for: folder),
-                isExpanded: false,
-                hasUnreadTitleActivity: false,
-                colors: rowColors
-            )
-            .tag(SidebarSelection.folder(folder.id))
-            .id(sidebarItemID(for: folder.url))
-        }
-        .onMove { source, destination in
-            moveFolders(
-                folders,
-                hasTabs: false,
-                fromOffsets: source,
-                toOffset: destination
-            )
         }
     }
 

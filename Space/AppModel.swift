@@ -9,10 +9,69 @@ struct UnreadTitleActivityEvent: Equatable {
     private let occurrenceID = UUID()
 }
 
+private struct FolderLaunchState {
+    enum Selection {
+        case standalone
+        case folder(URL)
+    }
+
+    let trackedFolders: [URL]
+    let recentFolders: [URL]
+    let openFolders: [URL]
+    let includesStandaloneTab: Bool
+    let selection: Selection
+
+    init(
+        initialFolder: URL?,
+        recentFolders: [URL],
+        workspace: FolderWorkspaceState
+    ) {
+        if let initialFolder {
+            trackedFolders = [initialFolder]
+            self.recentFolders = [initialFolder]
+            openFolders = [initialFolder]
+            includesStandaloneTab = false
+            selection = .folder(initialFolder)
+            return
+        }
+
+        self.recentFolders = recentFolders
+        openFolders = workspace.openFolders
+        includesStandaloneTab = true
+
+        var trackedFolders = recentFolders
+        var trackedPaths = Set(recentFolders.map(\.standardizedFileURL.path))
+        for folder in openFolders {
+            let path = folder.standardizedFileURL.path
+            if trackedPaths.insert(path).inserted {
+                trackedFolders.append(folder)
+            }
+        }
+        self.trackedFolders = trackedFolders
+
+        let activePath = workspace.activeFolder?.standardizedFileURL.path
+        if let activeFolder = openFolders.first(where: {
+            $0.standardizedFileURL.path == activePath
+        }) {
+            selection = .folder(activeFolder)
+        } else {
+            selection = .standalone
+        }
+    }
+
+    var trackedFoldersInOrder: [URL] {
+        let openPaths = Set(openFolders.map(\.standardizedFileURL.path))
+        return openFolders + trackedFolders.filter {
+            !openPaths.contains($0.standardizedFileURL.path)
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var folders: [Folder]
-    @Published private var sidebarFolderPaths: [String]
+    @Published private var folderOrderPaths: [String]
+    @Published private var recentFolderPaths: [String]
     @Published private(set) var terminalSessions: [TerminalSession] {
         willSet { workspaceIndex.indexSessions(newValue) }
     }
@@ -50,6 +109,7 @@ final class AppModel: ObservableObject {
     private var recentlyClosedTerminalLocations: [ClosedTerminalLocation] = []
     private var lastActiveStandaloneTabID: UUID?
     private var lastActiveTabIDByFolderPath: [String: UUID] = [:]
+    private static let recentFolderLimit = 15
 
     init(
         defaults: UserDefaults = .standard,
@@ -60,64 +120,92 @@ final class AppModel: ObservableObject {
         self.processInspector = processInspector ?? TerminalProcessInspector()
         settings = AppSettings(defaults: defaults)
 
-        let restoredFolders = folderStore.restore()
-        let requestedInitialFolderURL = FolderStore.validFolderURL(
-            initialFolderURL
+        let launchState = FolderLaunchState(
+            initialFolder: FolderStore.validFolderURL(initialFolderURL),
+            recentFolders: folderStore.restoreRecentFolders(
+                limit: Self.recentFolderLimit
+            ),
+            workspace: folderStore.restoreWorkspace()
         )
-        let folderURLs: [URL]
-        if let initialFolder = requestedInitialFolderURL {
-            folderURLs = [initialFolder]
-        } else {
-            folderURLs = restoredFolders
-        }
 
-        folders = folderURLs.map { Folder(url: $0) }
-        sidebarFolderPaths = folderURLs.map {
+        folders = launchState.trackedFolders.map { Folder(url: $0) }
+        folderOrderPaths = launchState.trackedFoldersInOrder.map {
+            $0.standardizedFileURL.path
+        }
+        recentFolderPaths = launchState.recentFolders.map {
             $0.standardizedFileURL.path
         }
         terminalSessions = []
         terminalTabs = []
         activeTabID = nil
 
-        if let initialFolderURL = requestedInitialFolderURL {
-            let initialSession = TerminalSession(
-                workingDirectoryURL: initialFolderURL,
-                settings: settings
-            )
-            terminalSessions = [initialSession]
-            terminalTabs = [TerminalTabState(
-                id: initialSession.id,
-                ownerFolderURL: initialFolderURL,
-                root: .pane(initialSession.id),
-                focusedTerminalID: initialSession.id
-            )]
-            activeTabID = initialSession.id
-            lastActiveTabIDByFolderPath[initialFolderURL.path] = initialSession.id
-            bindCloseHandler(to: initialSession)
-        } else {
-            let initialSession = TerminalSession(
-                workingDirectoryURL: FileManager.default
-                    .homeDirectoryForCurrentUser,
-                settings: settings
-            )
-            terminalSessions = [initialSession]
-            terminalTabs = [TerminalTabState(
-                id: initialSession.id,
-                ownerFolderURL: nil,
-                root: .pane(initialSession.id),
-                focusedTerminalID: initialSession.id
-            )]
-            activeTabID = initialSession.id
-            lastActiveStandaloneTabID = initialSession.id
-            bindCloseHandler(to: initialSession)
-        }
+        restoreTabs(from: launchState)
         workspaceIndex.indexSessions(terminalSessions)
         workspaceIndex.indexTabs(terminalTabs)
-        persistFolders()
+        persistRecentFolders()
+        persistFolderWorkspace()
+    }
+
+    private func restoreTabs(from launchState: FolderLaunchState) {
+        if launchState.includesStandaloneTab {
+            let session = appendTerminalTab(
+                workingDirectoryURL: FileManager.default
+                    .homeDirectoryForCurrentUser,
+                ownerFolderURL: nil
+            )
+            lastActiveStandaloneTabID = session.id
+        }
+
+        for folderURL in launchState.openFolders {
+            let session = appendTerminalTab(
+                workingDirectoryURL: folderURL,
+                ownerFolderURL: folderURL
+            )
+            lastActiveTabIDByFolderPath[folderURL.path] = session.id
+        }
+
+        switch launchState.selection {
+        case .standalone:
+            activeTabID = lastActiveStandaloneTabID
+        case let .folder(folderURL):
+            let activePath = folderURL.standardizedFileURL.path
+            activeTabID = terminalTabs.first {
+                $0.ownerFolderURL?.standardizedFileURL.path == activePath
+            }?.id
+        }
+    }
+
+    @discardableResult
+    private func appendTerminalTab(
+        workingDirectoryURL: URL,
+        ownerFolderURL: URL?
+    ) -> TerminalSession {
+        let session = TerminalSession(
+            workingDirectoryURL: workingDirectoryURL,
+            settings: settings
+        )
+        bindCloseHandler(to: session)
+        terminalSessions.append(session)
+        terminalTabs.append(TerminalTabState(
+            id: session.id,
+            ownerFolderURL: ownerFolderURL,
+            root: .pane(session.id),
+            focusedTerminalID: session.id
+        ))
+        return session
     }
 
     var folderURLs: [URL] {
         folders.map(\.url)
+    }
+
+    var recentFolders: [Folder] {
+        let foldersByPath = Dictionary(
+            uniqueKeysWithValues: folders.map {
+                ($0.url.standardizedFileURL.path, $0)
+            }
+        )
+        return recentFolderPaths.compactMap { foldersByPath[$0] }
     }
 
     var activeScopeTabs: [TerminalTabState] {
@@ -132,15 +220,11 @@ final class AppModel: ObservableObject {
     }
 
     var foldersWithTabs: [Folder] {
-        sidebarOrderedFolders.filter(folderHasTabs)
+        storedFoldersInOrder.filter(folderHasTabs)
     }
 
-    var foldersWithoutTabs: [Folder] {
-        sidebarOrderedFolders.filter { !folderHasTabs($0) }
-    }
-
-    var foldersInSidebarOrder: [Folder] {
-        foldersWithTabs + foldersWithoutTabs
+    var trackedFoldersInOrder: [Folder] {
+        foldersWithTabs + storedFoldersInOrder.filter { !folderHasTabs($0) }
     }
 
     var tabsInSidebarOrder: [TerminalTabState] {
@@ -154,7 +238,7 @@ final class AppModel: ObservableObject {
     }
 
     var tabGroupCount: Int {
-        folders.count + 1
+        foldersWithTabs.count + (standaloneTabs.isEmpty ? 0 : 1)
     }
 
     var unreadTitleFolderPaths: Set<String> {
@@ -164,9 +248,9 @@ final class AppModel: ObservableObject {
         })
     }
 
-    private var sidebarOrderedFolders: [Folder] {
+    private var storedFoldersInOrder: [Folder] {
         let orderByPath = Dictionary(
-            uniqueKeysWithValues: sidebarFolderPaths.enumerated().map {
+            uniqueKeysWithValues: folderOrderPaths.enumerated().map {
                 ($0.element, $0.offset)
             }
         )
@@ -400,8 +484,8 @@ final class AppModel: ObservableObject {
             return .duplicate(folderURL)
         }
         folders.append(Folder(url: folderURL))
-        sidebarFolderPaths.append(folderURL.path)
-        persistFolders()
+        folderOrderPaths.append(folderURL.path)
+        markFolderRecent(folderURL)
 
         if activate {
             activateFolder(folderURL)
@@ -469,14 +553,16 @@ final class AppModel: ObservableObject {
             $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
         folders.remove(at: folderIndex)
-        sidebarFolderPaths.removeAll { $0 == folder.path }
+        folderOrderPaths.removeAll { $0 == folder.path }
+        recentFolderPaths.removeAll { $0 == folder.path }
         lastActiveTabIDByFolderPath.removeValue(forKey: folder.path)
 
         if activeTabID.map(removedTabIDs.contains) == true {
             activeTabID = terminalTabs.last?.id
         }
 
-        persistFolders()
+        persistRecentFolders()
+        persistFolderWorkspace()
     }
 
     func setFolderOrder(_ orderedFolders: [Folder]) {
@@ -485,10 +571,10 @@ final class AppModel: ObservableObject {
             return
         }
         folders = orderedFolders
-        sidebarFolderPaths = orderedFolders.map {
+        folderOrderPaths = orderedFolders.map {
             $0.url.standardizedFileURL.path
         }
-        persistFolders()
+        persistFolderWorkspace()
     }
 
     func activateFolder(_ url: URL) {
@@ -510,8 +596,7 @@ final class AppModel: ObservableObject {
         if let existing = rememberedTab ?? terminalTabs.last(where: {
             $0.ownerFolderURL?.standardizedFileURL.path == folderPath
         }) {
-            activeTabID = existing.id
-            lastActiveTabIDByFolderPath[folderPath] = existing.id
+            selectTab(existing.id)
             return
         }
 
@@ -542,27 +627,21 @@ final class AppModel: ObservableObject {
     func openNewTerminal(for url: URL) {
         guard let folderURL = folderURL(containing: url.standardizedFileURL)
         else { return }
+        markFolderRecent(folderURL)
 
         let isOpeningFirstTab = !terminalTabs.contains {
             $0.ownerFolderURL?.standardizedFileURL.path == folderURL.path
         }
-        let session = TerminalSession(
+        let session = appendTerminalTab(
             workingDirectoryURL: folderURL,
-            settings: settings
+            ownerFolderURL: folderURL
         )
-        bindCloseHandler(to: session)
-        terminalSessions.append(session)
-        terminalTabs.append(TerminalTabState(
-            id: session.id,
-            ownerFolderURL: folderURL,
-            root: .pane(session.id),
-            focusedTerminalID: session.id
-        ))
         if isOpeningFirstTab {
             repositionFolderForTabState(folderURL)
         }
         activeTabID = session.id
         lastActiveTabIDByFolderPath[folderURL.path] = session.id
+        persistFolderWorkspace()
     }
 
     func openNewStandaloneTerminal() {
@@ -588,24 +667,17 @@ final class AppModel: ObservableObject {
         guard let workingDirectoryURL = FolderStore.validFolderURL(
             workingDirectoryURL
         ) else { return }
-        let session = TerminalSession(
+        let session = appendTerminalTab(
             workingDirectoryURL: workingDirectoryURL,
-            settings: settings
+            ownerFolderURL: nil
         )
-        bindCloseHandler(to: session)
-        terminalSessions.append(session)
-        terminalTabs.append(TerminalTabState(
-            id: session.id,
-            ownerFolderURL: nil,
-            root: .pane(session.id),
-            focusedTerminalID: session.id
-        ))
         activeTabID = session.id
         lastActiveStandaloneTabID = session.id
+        persistFolderWorkspace()
     }
 
     private func repositionFolderForTabState(_ folderURL: URL) {
-        var orderedFolders = sidebarOrderedFolders
+        var orderedFolders = storedFoldersInOrder
         guard let sourceIndex = orderedFolders.firstIndex(where: {
             $0.url.standardizedFileURL.path == folderURL.path
         }) else { return }
@@ -669,11 +741,13 @@ final class AppModel: ObservableObject {
         activeTabID = tab.id
         clearAgentAttention(for: id)
         if let folderURL = tab.ownerFolderURL {
+            markFolderRecent(folderURL)
             lastActiveTabIDByFolderPath[folderURL.standardizedFileURL.path] =
                 tab.id
         } else {
             lastActiveStandaloneTabID = tab.id
         }
+        persistFolderWorkspace()
     }
 
     func selectTab(_ id: UUID) {
@@ -827,8 +901,9 @@ final class AppModel: ObservableObject {
 
     @discardableResult
     func selectAdjacentTabGroup(offset: Int) -> Bool {
-        let orderedFolders = foldersInSidebarOrder
-        let groupCount = orderedFolders.count + 1
+        let orderedFolders = foldersWithTabs
+        let hasStandaloneGroup = !standaloneTabs.isEmpty
+        let groupCount = orderedFolders.count + (hasStandaloneGroup ? 1 : 0)
         guard groupCount > 1 else { return false }
 
         let activeIndex: Int
@@ -837,16 +912,18 @@ final class AppModel: ObservableObject {
            let folderIndex = orderedFolders.firstIndex(where: {
                $0.url.standardizedFileURL.path == activeFolder.path
            }) {
-            activeIndex = folderIndex + 1
+            activeIndex = folderIndex + (hasStandaloneGroup ? 1 : 0)
         } else {
+            guard hasStandaloneGroup else { return false }
             activeIndex = 0
         }
 
         let next = (activeIndex + offset + groupCount) % groupCount
-        if next == 0 {
+        if hasStandaloneGroup && next == 0 {
             activateStandaloneTabGroup()
         } else {
-            activateFolder(orderedFolders[next - 1].url)
+            let folderIndex = next - (hasStandaloneGroup ? 1 : 0)
+            activateFolder(orderedFolders[folderIndex].url)
         }
         return true
     }
@@ -991,6 +1068,7 @@ final class AppModel: ObservableObject {
             if !folderStillHasTabs {
                 lastActiveTabIDByFolderPath.removeValue(forKey: folderPath)
                 repositionFolderForTabState(folderURL)
+                pruneUntrackedFolders()
             } else if lastActiveTabIDByFolderPath[folderPath]
                 == closingTab.id,
                 !terminalTabs.contains(where: { $0.id == closingTab.id }) {
@@ -1003,6 +1081,7 @@ final class AppModel: ObservableObject {
         if terminalTabs.isEmpty {
             closeWindowHandler?()
         }
+        persistFolderWorkspace()
 
         // AppKit may finish dismantling the old split containers after SwiftUI
         // has rendered the collapsed tree. Refresh on the next run loop so the
@@ -1020,8 +1099,13 @@ final class AppModel: ObservableObject {
                 continue
             }
             if let folderURL = location.ownerFolderURL {
-                guard self.folderURL(containing: folderURL) != nil else {
-                    continue
+                if self.folderURL(containing: folderURL) == nil {
+                    guard case .added = addFolder(
+                        folderURL,
+                        activate: false
+                    ) else {
+                        continue
+                    }
                 }
                 openNewTerminal(for: folderURL)
             } else {
@@ -1238,8 +1322,53 @@ final class AppModel: ObservableObject {
         agentAttentionByTerminalID.removeValue(forKey: terminalID)
     }
 
-    private func persistFolders() {
-        folderStore.persist(folderURLs)
+    private func persistRecentFolders() {
+        let foldersByPath = Dictionary(
+            uniqueKeysWithValues: folders.map {
+                ($0.url.standardizedFileURL.path, $0.url)
+            }
+        )
+        folderStore.persistRecentFolders(
+            recentFolderPaths.compactMap { foldersByPath[$0] }
+        )
+    }
+
+    func persistFolderWorkspace() {
+        folderStore.persistWorkspace(FolderWorkspaceState(
+            openFolders: foldersWithTabs.map(\.url),
+            activeFolder: activeFolderURL
+        ))
+    }
+
+    func clearRecentFolders() {
+        recentFolderPaths.removeAll()
+        pruneUntrackedFolders()
+        persistRecentFolders()
+    }
+
+    private func markFolderRecent(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        recentFolderPaths.removeAll { $0 == path }
+        recentFolderPaths.insert(path, at: 0)
+        if recentFolderPaths.count > Self.recentFolderLimit {
+            recentFolderPaths.removeLast(
+                recentFolderPaths.count - Self.recentFolderLimit
+            )
+        }
+        pruneUntrackedFolders()
+        persistRecentFolders()
+    }
+
+    private func pruneUntrackedFolders() {
+        let recentPaths = Set(recentFolderPaths)
+        let openPaths = Set(terminalTabs.compactMap {
+            $0.ownerFolderURL?.standardizedFileURL.path
+        })
+        let retainedPaths = recentPaths.union(openPaths)
+        folders.removeAll {
+            !retainedPaths.contains($0.url.standardizedFileURL.path)
+        }
+        folderOrderPaths.removeAll { !retainedPaths.contains($0) }
     }
 
     private func presentFolderAdditionFailures(

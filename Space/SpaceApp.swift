@@ -49,6 +49,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
         applicationShortcutMonitor = nil
         terminationCheckTask?.cancel()
         terminationCheckTask = nil
+        model?.persistFolderWorkspace()
         model?.stopTerminalRuntimeMonitoring()
         model?.agentAttentionHandler = nil
     }
@@ -282,6 +283,25 @@ struct SpaceApp: App {
                     model.chooseFolder()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Menu("Open Recent") {
+                    if model.recentFolders.isEmpty {
+                        Button("No Recent Folders") {}
+                            .disabled(true)
+                    } else {
+                        ForEach(model.recentFolders) { folder in
+                            Button(folder.displayName) {
+                                model.activateFolder(folder.url)
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Clear Menu") {
+                            model.clearRecentFolders()
+                        }
+                    }
+                }
 
                 Divider()
 

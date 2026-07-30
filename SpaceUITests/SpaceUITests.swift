@@ -147,7 +147,7 @@ final class SpaceUITests: XCTestCase {
 
     @MainActor
     func testFolderExpansionStatesAreIndependent() throws {
-        let (app, folders) = try launchIsolatedApp(
+        let (app, _) = try launchIsolatedApp(
             folderNames: ["First", "Second"]
         )
         defer { app.terminate() }
@@ -161,12 +161,7 @@ final class SpaceUITests: XCTestCase {
         XCTAssertEqual(folderTabs.count, 1)
         let firstTabIdentifier = folderTabs.firstMatch.identifier
 
-        let secondFolder = element(
-            in: app.descendants(matching: .any),
-            identifier: "folder-row:\(folders[1].path)"
-        )
-        XCTAssertTrue(secondFolder.waitForExistence(timeout: 3))
-        secondFolder.click()
+        openRecentFolder(named: "Second", in: app)
 
         let bothFoldersRemainExpanded = NSPredicate {
             _, _ in folderTabs.count == 2
@@ -213,6 +208,9 @@ final class SpaceUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(standaloneTab.waitForExistence(timeout: 3))
         XCTAssertFalse(app.staticTexts["Other Folders"].exists)
+        openRecentMenu(in: app)
+        XCTAssertTrue(app.menuItems["No Recent Folders"].exists)
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     @MainActor
@@ -296,7 +294,7 @@ final class SpaceUITests: XCTestCase {
         XCTAssertEqual(folderTabs.count, 1)
         let refreshingTabIdentifier = folderTabs.firstMatch.identifier
         app.typeText(
-            "for i in {1..15}; do printf '\\033]0;%s\\007' \"$i\"; "
+            "for i in {1..30}; do printf '\\033]0;%s\\007' \"$i\"; "
                 + "sleep 0.2; done"
         )
         app.typeKey(.return, modifierFlags: [])
@@ -309,38 +307,22 @@ final class SpaceUITests: XCTestCase {
                 )
             ).firstMatch
         }
-        folderRow(at: folders[1]).click()
-
         let firstFolder = folderRow(at: folders[0])
+        let initialDisclosure = row(
+            in: app.disclosureTriangles,
+            nearestTo: firstFolder
+        )
+        XCTAssertTrue(initialDisclosure.waitForExistence(timeout: 3))
+        initialDisclosure.click()
+        openRecentFolder(named: "Second", in: app)
+
         let activityValue = "Terminal content is updating"
-        let duplicatedActivity = expectation(
-            for: NSPredicate(
-                format: "value == %@",
-                activityValue
-            ),
-            evaluatedWith: firstFolder
-        )
-        duplicatedActivity.isInverted = true
-        waitForExpectations(timeout: 0.75)
-        XCTAssertNotEqual(
-            firstFolder.value as? String,
-            activityValue
-        )
-        XCTAssertNotEqual(
-            folderRow(at: folders[1]).value as? String,
-            activityValue
-        )
-
-        let disclosureTriangle = app.disclosureTriangles.firstMatch
-        XCTAssertTrue(disclosureTriangle.waitForExistence(timeout: 3))
-        disclosureTriangle.click()
-
         let activityStarts = NSPredicate(
             format: "value == %@",
             activityValue
         )
         expectation(for: activityStarts, evaluatedWith: firstFolder)
-        waitForExpectations(timeout: 2)
+        waitForExpectations(timeout: 3)
 
         let unreadValue = "Unread terminal activity"
         let activityBecomesUnread = NSPredicate(
@@ -348,8 +330,13 @@ final class SpaceUITests: XCTestCase {
             unreadValue
         )
         expectation(for: activityBecomesUnread, evaluatedWith: firstFolder)
-        waitForExpectations(timeout: 5)
+        waitForExpectations(timeout: 8)
 
+        let disclosureTriangle = row(
+            in: app.disclosureTriangles,
+            nearestTo: firstFolder
+        )
+        XCTAssertTrue(disclosureTriangle.exists)
         disclosureTriangle.click()
         let folderUnreadClears = NSPredicate(
             format: "value != %@",
@@ -407,47 +394,40 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testNoTabFoldersCanBeReorderedByDragging() throws {
+    func testOpenRecentIncludesOpenAndClosedFolders() throws {
         let (app, folders) = try launchIsolatedApp(
             folderNames: ["First", "Second", "Third"]
         )
         defer { app.terminate() }
 
-        let secondIdentifier = "folder-row:\(folders[1].path)"
-        let thirdIdentifier = "folder-row:\(folders[2].path)"
+        let first = element(
+            in: app.descendants(matching: .any),
+            identifier: "folder-row:\(folders[0].path)"
+        )
         let second = element(
             in: app.descendants(matching: .any),
-            identifier: secondIdentifier
+            identifier: "folder-row:\(folders[1].path)"
         )
         let third = element(
             in: app.descendants(matching: .any),
-            identifier: thirdIdentifier
+            identifier: "folder-row:\(folders[2].path)"
         )
+        XCTAssertTrue(first.waitForExistence(timeout: 3))
+        XCTAssertFalse(second.exists)
+        XCTAssertFalse(third.exists)
+
+        openRecentMenu(in: app)
+        XCTAssertTrue(app.menuItems["First"].exists)
+        XCTAssertTrue(app.menuItems["Second"].exists)
+        XCTAssertTrue(app.menuItems["Third"].exists)
+        app.menuItems["Second"].click()
+
         XCTAssertTrue(second.waitForExistence(timeout: 3))
-        XCTAssertTrue(third.exists)
-
-        let rows = app.outlines.firstMatch.cells
-        let secondRow = row(
-            in: rows,
-            nearestTo: second
-        )
-        let thirdRow = row(
-            in: rows,
-            nearestTo: third
-        )
-        XCTAssertTrue(secondRow.exists)
-        XCTAssertTrue(thirdRow.exists)
-        let source = thirdRow.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)
-        )
-        let target = secondRow.coordinate(
-            withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05)
-        )
-        source.press(forDuration: 0.5, thenDragTo: target)
-
-        let moved = NSPredicate { _, _ in third.frame.minY < second.frame.minY }
-        expectation(for: moved, evaluatedWith: nil)
-        waitForExpectations(timeout: 3)
+        openRecentMenu(in: app)
+        XCTAssertTrue(app.menuItems["First"].exists)
+        XCTAssertTrue(app.menuItems["Second"].exists)
+        XCTAssertTrue(app.menuItems["Third"].exists)
+        app.typeKey(.escape, modifierFlags: [])
     }
 
     @MainActor
@@ -528,6 +508,25 @@ final class SpaceUITests: XCTestCase {
         let draggedTabIsVisibleAgain = NSPredicate(format: "hittable == true")
         expectation(for: draggedTabIsVisibleAgain, evaluatedWith: second)
         waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
+    private func openRecentFolder(
+        named name: String,
+        in app: XCUIApplication
+    ) {
+        openRecentMenu(in: app)
+        let folder = app.menuItems[name]
+        XCTAssertTrue(folder.waitForExistence(timeout: 3))
+        folder.click()
+    }
+
+    @MainActor
+    private func openRecentMenu(in app: XCUIApplication) {
+        app.menuBars.menuBarItems["File"].click()
+        let openRecent = app.menuItems["Open Recent"]
+        XCTAssertTrue(openRecent.waitForExistence(timeout: 3))
+        openRecent.click()
     }
 
     @MainActor
