@@ -478,10 +478,17 @@ final class AppModel: ObservableObject {
         guard let folderURL = FolderStore.validFolderURL(url) else {
             return .invalid(url.standardizedFileURL)
         }
-        if folderURLs.contains(where: {
-            $0.standardizedFileURL.path == folderURL.path
+        if let trackedFolder = folders.first(where: {
+            $0.url.standardizedFileURL.path == folderURL.path
         }) {
-            return .duplicate(folderURL)
+            guard !folderHasTabs(trackedFolder) else {
+                return .duplicate(folderURL)
+            }
+            markFolderRecent(folderURL)
+            if activate {
+                activateFolder(folderURL)
+            }
+            return .added(folderURL)
         }
         folders.append(Folder(url: folderURL))
         folderOrderPaths.append(folderURL.path)

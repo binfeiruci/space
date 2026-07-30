@@ -1008,6 +1008,44 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func addingClosedRecentFolderReopensIt() throws {
+        defer { removeIsolatedDefaults() }
+        let container = try temporaryDirectory()
+        let first = container.appendingPathComponent(
+            "First",
+            isDirectory: true
+        )
+        let second = container.appendingPathComponent(
+            "Second",
+            isDirectory: true
+        )
+        for directory in [first, second] {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+        }
+        defer { try? FileManager.default.removeItem(at: container) }
+        let model = AppModel(
+            defaults: isolatedDefaults(scope: container),
+            initialFolderURL: first
+        )
+
+        #expect(model.addFolder(second) == .added(second))
+        let secondTerminalID = try #require(model.activeTerminalID)
+        model.closeTerminal(secondTerminalID)
+        #expect(model.terminalSessionCount(in: second) == 0)
+        #expect(model.recentFolders.map(\.url) == [second, first])
+
+        model.addFolders([second])
+
+        #expect(model.alertRequest == nil)
+        #expect(model.activeFolderURL == second.standardizedFileURL)
+        #expect(model.terminalSessionCount(in: second) == 1)
+        #expect(model.recentFolders.map(\.url) == [second, first])
+    }
+
+    @Test @MainActor
     func recentFolderOrderPersistsIndependentlyOfSidebarOrder() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
