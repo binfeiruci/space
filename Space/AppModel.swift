@@ -3,6 +3,7 @@ import Combine
 import CoreGraphics
 import Foundation
 import GhosttyTerminal
+import Observation
 
 struct UnreadTitleActivityEvent: Equatable {
     let tabID: UUID
@@ -68,32 +69,34 @@ private struct FolderLaunchState {
 }
 
 @MainActor
-final class AppModel: ObservableObject {
-    @Published private(set) var folders: [Folder]
-    @Published private var folderOrderPaths: [String]
-    @Published private var recentFolderPaths: [String]
-    @Published private(set) var terminalSessions: [TerminalSession] {
+@Observable
+final class AppModel {
+    private(set) var folders: [Folder]
+    private var folderOrderPaths: [String]
+    private var recentFolderPaths: [String]
+    private(set) var terminalSessions: [TerminalSession] {
         willSet { workspaceIndex.indexSessions(newValue) }
     }
-    @Published private(set) var terminalTabs: [TerminalTabState] {
+    private(set) var terminalTabs: [TerminalTabState] {
         willSet { workspaceIndex.indexTabs(newValue) }
     }
-    @Published private(set) var activeTabID: UUID? {
+    private(set) var activeTabID: UUID? {
         didSet {
             markActiveTabRead()
         }
     }
-    @Published private(set) var alertRequest: AlertRequest?
-    @Published private(set) var renameRequest: TabRenameRequest?
-    @Published private(set) var memoSaveNotice: MemoSaveNotice?
-    @Published private(set) var isFolderImporterPresented = false
-    @Published private(set) var isSidebarVisible = true
-    @Published private(set) var agentAttentionByTerminalID:
+    private(set) var alertRequest: AlertRequest?
+    private(set) var renameRequest: TabRenameRequest?
+    private(set) var memoSaveNotice: MemoSaveNotice?
+    private(set) var isFolderImporterPresented = false
+    private(set) var isSidebarVisible = true
+    private(set) var agentAttentionByTerminalID:
         [UUID: AgentAttentionNotification] = [:]
-    @Published private var refreshingTitleFrameByTerminalID: [UUID: String] = [:]
-    @Published private(set) var unreadTitleTabIDs: Set<UUID> = []
-    @Published private(set) var latestUnreadTitleActivity:
+    private var refreshingTitleFrameByTerminalID: [UUID: String] = [:]
+    private(set) var unreadTitleTabIDs: Set<UUID> = []
+    private(set) var latestUnreadTitleActivity:
         UnreadTitleActivityEvent?
+    private(set) var terminalLayoutRevision = 0
 
     let settings: AppSettings
     var agentAttentionHandler: ((UUID) -> Void)?
@@ -263,7 +266,11 @@ final class AppModel: ObservableObject {
     }
 
     func folderHasTabs(_ folder: Folder) -> Bool {
-        let folderPath = folder.url.standardizedFileURL.path
+        folderHasTabs(at: folder.url)
+    }
+
+    private func folderHasTabs(at url: URL) -> Bool {
+        let folderPath = url.standardizedFileURL.path
         return terminalTabs.contains {
             $0.ownerFolderURL?.standardizedFileURL.path == folderPath
         }
@@ -484,18 +491,15 @@ final class AppModel: ObservableObject {
             guard !folderHasTabs(trackedFolder) else {
                 return .duplicate(folderURL)
             }
-            markFolderRecent(folderURL)
-            if activate {
-                activateFolder(folderURL)
-            }
-            return .added(folderURL)
+        } else {
+            folders.append(Folder(url: folderURL))
+            folderOrderPaths.append(folderURL.path)
         }
-        folders.append(Folder(url: folderURL))
-        folderOrderPaths.append(folderURL.path)
-        markFolderRecent(folderURL)
 
         if activate {
             activateFolder(folderURL)
+        } else {
+            markFolderRecent(folderURL)
         }
         return .added(folderURL)
     }
@@ -536,7 +540,7 @@ final class AppModel: ObservableObject {
 
     func removeFolder(_ url: URL) {
         let folder = url.standardizedFileURL
-        guard let folderIndex = folders.firstIndex(where: {
+        guard folders.contains(where: {
             $0.url.standardizedFileURL.path == folder.path
         }) else { return }
 
@@ -559,16 +563,13 @@ final class AppModel: ObservableObject {
         recentlyClosedTerminalLocations.removeAll {
             $0.ownerFolderURL?.standardizedFileURL.path == folder.path
         }
-        folders.remove(at: folderIndex)
-        folderOrderPaths.removeAll { $0 == folder.path }
-        recentFolderPaths.removeAll { $0 == folder.path }
         lastActiveTabIDByFolderPath.removeValue(forKey: folder.path)
+        pruneUntrackedFolders()
 
         if activeTabID.map(removedTabIDs.contains) == true {
             activeTabID = terminalTabs.last?.id
         }
 
-        persistRecentFolders()
         persistFolderWorkspace()
     }
 
@@ -607,6 +608,7 @@ final class AppModel: ObservableObject {
             return
         }
 
+        markFolderRecent(folderURL)
         openNewTerminal(for: folderURL)
     }
 
@@ -634,11 +636,8 @@ final class AppModel: ObservableObject {
     func openNewTerminal(for url: URL) {
         guard let folderURL = folderURL(containing: url.standardizedFileURL)
         else { return }
-        markFolderRecent(folderURL)
 
-        let isOpeningFirstTab = !terminalTabs.contains {
-            $0.ownerFolderURL?.standardizedFileURL.path == folderURL.path
-        }
+        let isOpeningFirstTab = !folderHasTabs(at: folderURL)
         let session = appendTerminalTab(
             workingDirectoryURL: folderURL,
             ownerFolderURL: folderURL
@@ -748,7 +747,6 @@ final class AppModel: ObservableObject {
         activeTabID = tab.id
         clearAgentAttention(for: id)
         if let folderURL = tab.ownerFolderURL {
-            markFolderRecent(folderURL)
             lastActiveTabIDByFolderPath[folderURL.standardizedFileURL.path] =
                 tab.id
         } else {
@@ -1094,7 +1092,7 @@ final class AppModel: ObservableObject {
         // has rendered the collapsed tree. Refresh on the next run loop so the
         // surviving session-owned terminal view is attached to its final pane.
         DispatchQueue.main.async { [weak self] in
-            self?.objectWillChange.send()
+            self?.terminalLayoutRevision += 1
         }
     }
 
@@ -1106,7 +1104,13 @@ final class AppModel: ObservableObject {
                 continue
             }
             if let folderURL = location.ownerFolderURL {
-                if self.folderURL(containing: folderURL) == nil {
+                if let trackedFolderURL = self.folderURL(
+                    containing: folderURL
+                ) {
+                    if !folderHasTabs(at: trackedFolderURL) {
+                        markFolderRecent(trackedFolderURL)
+                    }
+                } else {
                     guard case .added = addFolder(
                         folderURL,
                         activate: false
@@ -1355,6 +1359,7 @@ final class AppModel: ObservableObject {
 
     private func markFolderRecent(_ url: URL) {
         let path = url.standardizedFileURL.path
+        guard recentFolderPaths.first != path else { return }
         recentFolderPaths.removeAll { $0 == path }
         recentFolderPaths.insert(path, at: 0)
         if recentFolderPaths.count > Self.recentFolderLimit {

@@ -213,11 +213,11 @@ enum TerminalTabSelectionShortcut {
 struct SpaceApp: App {
     @NSApplicationDelegateAdaptor(SpaceAppDelegate.self)
     private var appDelegate
-    @StateObject private var model: AppModel
+    @State private var model: AppModel
 
     init() {
         NSWindow.allowsAutomaticWindowTabbing = false
-        _model = StateObject(wrappedValue: Self.makeAppModel())
+        _model = State(initialValue: Self.makeAppModel())
     }
 
     private static func makeAppModel() -> AppModel {
@@ -251,7 +251,7 @@ struct SpaceApp: App {
                 settings: model.settings
             ) {
                 ContentView()
-                    .environmentObject(model)
+                    .environment(model)
                     .onAppear {
                         model.startTerminalRuntimeMonitoring()
                         appDelegate.installApplicationHandlers(

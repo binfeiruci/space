@@ -431,6 +431,58 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testOpenRecentStaysVisibleDuringTerminalTitleUpdates() throws {
+        let (app, _) = try launchIsolatedApp(
+            folderNames: ["First", "Second"]
+        )
+        defer { app.terminate() }
+
+        app.typeText(
+            "for i in {1..30}; do printf '\\033]0;%s\\007' \"$i\"; "
+                + "sleep 0.1; done"
+        )
+        app.typeKey(.return, modifierFlags: [])
+
+        openRecentMenu(in: app)
+        let first = app.menuItems["First"]
+        XCTAssertTrue(first.exists)
+        XCTAssertTrue(app.menuItems["Second"].exists)
+        let menuDisappears = expectation(
+            for: NSPredicate(format: "exists == false"),
+            evaluatedWith: first
+        )
+        menuDisappears.isInverted = true
+        waitForExpectations(timeout: 1)
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    @MainActor
+    func testRemovedFolderStaysInOpenRecent() throws {
+        let (app, folders) = try launchIsolatedApp(
+            folderNames: ["First", "Second"]
+        )
+        defer { app.terminate() }
+
+        openRecentFolder(named: "Second", in: app)
+        let second = element(
+            in: app.descendants(matching: .any),
+            identifier: "folder-row:\(folders[1].path)"
+        )
+        XCTAssertTrue(second.waitForExistence(timeout: 3))
+        second.rightClick()
+        let removeFolder = app.menuItems["Remove Folder"]
+        XCTAssertTrue(removeFolder.waitForExistence(timeout: 3))
+        removeFolder.click()
+        let secondDisappears = NSPredicate(format: "exists == false")
+        expectation(for: secondDisappears, evaluatedWith: second)
+        waitForExpectations(timeout: 3)
+
+        openRecentMenu(in: app)
+        XCTAssertTrue(app.menuItems["Second"].exists)
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    @MainActor
     func testTabsCanBeReorderedByDragging() throws {
         let (app, _) = try launchIsolatedApp(folderNames: [])
         defer { app.terminate() }

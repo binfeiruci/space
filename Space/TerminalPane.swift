@@ -3,9 +3,10 @@ import GhosttyTerminal
 import SwiftUI
 
 struct TerminalArea: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
 
     var body: some View {
+        let _ = model.terminalLayoutRevision
         ZStack {
             ForEach(model.terminalTabs) { tab in
                 TerminalSplitTree(
@@ -22,7 +23,7 @@ struct TerminalArea: View {
 }
 
 private struct TerminalSplitTree: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     let node: TerminalSplitNode
     let isVisible: Bool
     let showsFocusBorder: Bool
@@ -70,7 +71,7 @@ private struct TerminalSplitTree: View {
 }
 
 private struct TerminalSplitContainer: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     let splitID: UUID
     let axis: TerminalSplitAxis
     let ratio: CGFloat

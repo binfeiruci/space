@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
 
     private var folderImporterIsPresented: Binding<Bool> {
         Binding(
@@ -109,7 +109,7 @@ struct ContentView: View {
         }
         .sheet(item: renameRequest) { request in
             TabRenameSheet(request: request)
-                .environmentObject(model)
+                .environment(model)
         }
     }
 
@@ -158,7 +158,7 @@ private struct MemoSaveToast: View {
 }
 
 private struct TabRenameSheet: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     @FocusState private var isNameFocused: Bool
     let request: TabRenameRequest
     @State private var title: String
@@ -249,7 +249,7 @@ private struct SidebarStatusDot: View {
 }
 
 private struct FolderSidebar: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     @State private var expandedFolderPaths: Set<String> = []
     @State private var unreadCollapsedFolderPaths: Set<String> = []
 
@@ -535,7 +535,7 @@ private struct FolderSidebar: View {
 }
 
 private struct FolderRow: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     let folder: Folder
     let parentPath: String?
     let isExpanded: Bool
@@ -650,7 +650,7 @@ private struct FolderRow: View {
 }
 
 private struct SidebarTerminalTabRow: View {
-    @EnvironmentObject private var model: AppModel
+    @Environment(AppModel.self) private var model: AppModel
     let tab: TerminalTabState
     @ObservedObject var session: TerminalSession
     @ObservedObject private var terminal: TerminalViewState
@@ -793,5 +793,5 @@ private struct WindowConfigurator: NSViewRepresentable {
 
 #Preview {
     ContentView()
-        .environmentObject(AppModel())
+        .environment(AppModel())
 }

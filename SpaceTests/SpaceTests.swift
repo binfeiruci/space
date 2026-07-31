@@ -715,7 +715,10 @@ struct SpaceTests {
         #expect(model.activeTerminalTab?.customTitle == nil)
 
         model.requestRemoveFolder(folder)
-        #expect(model.folderURLs.isEmpty)
+        #expect(model.foldersWithTabs.isEmpty)
+        #expect(model.recentFolders.map(\.url) == [
+            folder.standardizedFileURL,
+        ])
         #expect(model.alertRequest == nil)
     }
 
@@ -864,7 +867,10 @@ struct SpaceTests {
         let standaloneTabID = try #require(model.activeTerminalTab?.id)
         model.removeFolder(home)
 
-        #expect(model.folderURLs.isEmpty)
+        #expect(model.foldersWithTabs.isEmpty)
+        #expect(model.recentFolders.map(\.url) == [
+            home.standardizedFileURL,
+        ])
         #expect(model.terminalTabs.map(\.id) == [standaloneTabID])
         #expect(!model.terminalTabs.contains { $0.id == folderTabID })
         #expect(model.activeTerminalTab?.id == standaloneTabID)
@@ -1203,7 +1209,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func recentFoldersTrackUsageAndClearWithoutClosingOpenTabs() throws {
+    func recentFoldersTrackFolderOpensButNotTabActivity() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         let first = container.appendingPathComponent(
@@ -1231,16 +1237,23 @@ struct SpaceTests {
         #expect(model.recentFolders.map(\.url) == [second, first])
 
         model.activateFolder(first)
-        #expect(model.recentFolders.map(\.url) == [first, second])
+        #expect(model.recentFolders.map(\.url) == [second, first])
+
+        model.openNewTerminal(for: first)
+        #expect(model.recentFolders.map(\.url) == [second, first])
+        let newestTerminalID = try #require(model.activeTerminalID)
 
         model.clearRecentFolders()
         #expect(model.recentFolders.isEmpty)
         #expect(model.folderURLs == [first])
-        #expect(model.activeTerminalID == firstTerminalID)
+        #expect(model.activeTerminalID == newestTerminalID)
         #expect(model.terminalSession(id: firstTerminalID) != nil)
 
         model.selectTerminal(firstTerminalID)
-        #expect(model.recentFolders.map(\.url) == [first])
+        #expect(model.recentFolders.isEmpty)
+
+        model.openNewTerminal(for: first)
+        #expect(model.recentFolders.isEmpty)
     }
 
     @Test @MainActor
@@ -1296,12 +1309,15 @@ struct SpaceTests {
 
         model.removeFolder(parent)
 
-        #expect(model.folderURLs == [child, independent])
+        #expect(model.foldersWithTabs.map(\.url) == [child, independent])
+        #expect(model.recentFolders.map(\.url) == [
+            independent, child, parent,
+        ])
         #expect(model.terminalSessionCount(in: child) == 1)
     }
 
     @Test @MainActor
-    func removedFolderDoesNotReturnOnNextLaunch() throws {
+    func removedFolderStaysRecentButDoesNotReopenOnNextLaunch() throws {
         defer { removeIsolatedDefaults() }
         let container = try temporaryDirectory()
         let first = container.appendingPathComponent("First", isDirectory: true)
@@ -1319,14 +1335,20 @@ struct SpaceTests {
         model?.addFolder(first)
         model?.addFolder(second)
         model?.removeFolder(second)
-        #expect(model?.folderURLs == [first])
+        #expect(model?.foldersWithTabs.map(\.url) == [first])
+        #expect(model?.recentFolders.map(\.url) == [second, first])
         #expect(model?.activeFolderURL == first)
         model = nil
 
         let restored = AppModel(defaults: defaults)
-        #expect(restored.folderURLs == [first])
+        #expect(restored.foldersWithTabs.map(\.url) == [first])
+        #expect(restored.recentFolders.map(\.url) == [second, first])
         #expect(restored.activeFolderURL == first.standardizedFileURL)
         #expect(restored.standaloneTabs.count == 1)
+
+        restored.activateFolder(second)
+        #expect(restored.activeFolderURL == second.standardizedFileURL)
+        #expect(restored.foldersWithTabs.map(\.url) == [first, second])
     }
 
     @Test @MainActor
@@ -2059,12 +2081,19 @@ struct SpaceTests {
         defer { removeIsolatedDefaults() }
         let folder = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
+        let other = folder.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: other,
+            withIntermediateDirectories: true
+        )
         let model = AppModel(
             defaults: isolatedDefaults(scope: folder),
             initialFolderURL: folder
         )
         model.openNewTerminal(for: folder)
         let closedID = try #require(model.activeTerminalID)
+        #expect(model.addFolder(other, activate: false) == .added(other))
+        #expect(model.recentFolders.map(\.url) == [other, folder])
 
         model.closeTerminal(closedID)
 
@@ -2076,6 +2105,7 @@ struct SpaceTests {
         #expect(!model.canRestoreClosedTerminal)
         #expect(model.activeFolderSessions.count == 2)
         #expect(model.activeTerminalID != closedID)
+        #expect(model.recentFolders.map(\.url) == [other, folder])
     }
 
     @Test @MainActor
