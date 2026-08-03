@@ -67,50 +67,34 @@ struct ContentView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            navigationSplitView
-
-            if let notice = model.memoSaveNotice {
-                MemoSaveToast(
-                    message: notice.message,
-                    systemImage: notice.systemImage
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                .task(id: notice.id) {
-                    try? await Task.sleep(for: .seconds(1.5))
-                    guard !Task.isCancelled else { return }
-                    model.dismissMemoSaveNotice(notice.id)
+        navigationSplitView
+            .background(Color(nsColor: .windowBackgroundColor))
+            .background(WindowConfigurator(
+                model: model
+            ))
+            .fileImporter(
+                isPresented: folderImporterIsPresented,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: true
+            ) { result in
+                model.dismissFolderImporter()
+                switch result {
+                case let .success(urls):
+                    model.addFolders(urls)
+                case let .failure(error):
+                    guard (error as NSError).code != NSUserCancelledError else {
+                        return
+                    }
+                    model.presentFolderImportError(error)
                 }
             }
-        }
-        .animation(.easeOut(duration: 0.16), value: model.memoSaveNotice)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .background(WindowConfigurator(
-            model: model
-        ))
-        .fileImporter(
-            isPresented: folderImporterIsPresented,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: true
-        ) { result in
-            model.dismissFolderImporter()
-            switch result {
-            case let .success(urls):
-                model.addFolders(urls)
-            case let .failure(error):
-                guard (error as NSError).code != NSUserCancelledError else {
-                    return
-                }
-                model.presentFolderImportError(error)
+            .alert(item: alertRequest) { state in
+                appAlert(state)
             }
-        }
-        .alert(item: alertRequest) { state in
-            appAlert(state)
-        }
-        .sheet(item: renameRequest) { request in
-            TabRenameSheet(request: request)
-                .environment(model)
-        }
+            .sheet(item: renameRequest) { request in
+                TabRenameSheet(request: request)
+                    .environment(model)
+            }
     }
 
     private func appAlert(_ state: AlertRequest) -> Alert {
@@ -134,26 +118,6 @@ struct ContentView: View {
                 model.dismissAlert()
             }
         )
-    }
-
-}
-
-private struct MemoSaveToast: View {
-    let message: String
-    let systemImage: String
-
-    var body: some View {
-        Label(message, systemImage: systemImage)
-            .font(.callout.weight(.medium))
-            .padding(.horizontal, 12)
-            .background(.regularMaterial, in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
-            .padding(.bottom, 18)
-            .accessibilityIdentifier("memo-save-toast")
     }
 }
 

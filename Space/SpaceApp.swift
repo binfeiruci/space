@@ -345,14 +345,6 @@ struct SpaceApp: App {
             CommandGroup(replacing: .saveItem) { }
 
             CommandGroup(after: .pasteboard) {
-                Button("Append Selection to Memo") {
-                    model.sendActiveSelectionToMemo()
-                }
-                .keyboardShortcut("m", modifiers: [.command, .shift])
-                .disabled(model.activeTerminalSession == nil)
-
-                Divider()
-
                 Button("Find…") {
                     model.activeTerminalSession?.presentSearch()
                 }

@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import Foundation
 import GhosttyTerminal
@@ -31,8 +30,6 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppSettings: ObservableObject {
-    static let defaultMemoFilePath = "~/memo.md"
-
     static let ghosttyConfigCandidatePaths = [
         "~/Library/Application Support/com.mitchellh.ghostty/config.ghostty",
         "~/Library/Application Support/com.mitchellh.ghostty/config",
@@ -57,10 +54,6 @@ final class AppSettings: ObservableObject {
     @Published var ghosttyConfigPath: String {
         didSet { defaults.set(ghosttyConfigPath, forKey: Keys.ghosttyConfigPath) }
     }
-    @Published var memoFilePath: String {
-        didSet { defaults.set(memoFilePath, forKey: Keys.memoFilePath) }
-    }
-
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -70,8 +63,6 @@ final class AppSettings: ObservableObject {
         ) ?? .system
         ghosttyConfigPath = defaults.string(forKey: Keys.ghosttyConfigPath)
             ?? Self.defaultGhosttyConfigPath
-        memoFilePath = defaults.string(forKey: Keys.memoFilePath)
-            ?? Self.defaultMemoFilePath
     }
 
     var resolvedGhosttyConfigURL: URL? {
@@ -100,33 +91,6 @@ final class AppSettings: ObservableObject {
             .map { .file($0.path) } ?? .none
     }
 
-    var resolvedMemoFileURL: URL? {
-        let path = Self.normalizedPath(memoFilePath)
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
-    }
-
-    var validMemoFileURL: URL? {
-        guard let fileURL = resolvedMemoFileURL else { return nil }
-
-        var isDirectory: ObjCBool = false
-        if FileManager.default.fileExists(
-            atPath: fileURL.path,
-            isDirectory: &isDirectory
-        ) {
-            return isDirectory.boolValue ? nil : fileURL
-        }
-
-        guard FileManager.default.fileExists(
-            atPath: fileURL.deletingLastPathComponent().path,
-            isDirectory: &isDirectory
-        ), isDirectory.boolValue else { return nil }
-        return fileURL
-    }
-
-    var isMemoFilePathValid: Bool {
-        validMemoFileURL != nil
-    }
-
     private static func normalizedPath(_ value: String) -> String {
         NSString(string: value)
             .expandingTildeInPath
@@ -136,7 +100,6 @@ final class AppSettings: ObservableObject {
     private enum Keys {
         static let appearance = "application.appearance"
         static let ghosttyConfigPath = "terminal.ghosttyConfigPath"
-        static let memoFilePath = "memo.filePath"
     }
 }
 
@@ -176,24 +139,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
                 }
-
-                HStack {
-                    TextField("Memo File", text: $settings.memoFilePath)
-                        .help("Memo entries are appended to this file.")
-
-                    Button("Choose…") {
-                        chooseMemoFile()
-                    }
-                }
-
-                if !settings.isMemoFilePathValid {
-                    Label(
-                        "Memo file location is not valid.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                }
             }
         }
         .formStyle(.grouped)
@@ -221,18 +166,6 @@ struct SettingsView: View {
                 dismissButton: .default(Text("OK"))
             )
         }
-    }
-
-    private func chooseMemoFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.directoryURL = settings.resolvedMemoFileURL?
-            .deletingLastPathComponent()
-        panel.prompt = "Choose"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        settings.memoFilePath = url.standardizedFileURL.path
     }
 }
 

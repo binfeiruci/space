@@ -5,10 +5,6 @@ protocol TerminalProcessInspecting: Sendable {
     func processNames(
         for requests: [TerminalProcessInspector.Request]
     ) async -> [UUID: String]
-
-    func workingDirectoryURL(
-        for request: TerminalProcessInspector.Request
-    ) async -> URL?
 }
 
 enum TerminalRuntimeMonitoringPolicy {
@@ -84,48 +80,6 @@ actor TerminalProcessInspector: TerminalProcessInspecting {
             namesBySessionID[request.sessionID] = process.name
         }
         return namesBySessionID
-    }
-
-    func workingDirectoryURL(for request: Request) -> URL? {
-        let identities = processIdentitySnapshots()
-        let childrenByParent = Dictionary(grouping: identities) {
-            $0.parentProcessID
-        }
-        var processNameByID: [pid_t: String] = [:]
-        guard let process = foregroundProcess(
-            for: request,
-            identities: identities,
-            childrenByParent: childrenByParent,
-            processNameByID: &processNameByID
-        ) else { return nil }
-        return Self.processWorkingDirectoryURL(processID: process.processID)
-    }
-
-    nonisolated static func processWorkingDirectoryURL(
-        processID: pid_t
-    ) -> URL? {
-        var info = proc_vnodepathinfo()
-        let byteCount = MemoryLayout<proc_vnodepathinfo>.stride
-        let result = proc_pidinfo(
-            processID,
-            PROC_PIDVNODEPATHINFO,
-            0,
-            &info,
-            Int32(byteCount)
-        )
-        guard result == byteCount else { return nil }
-
-        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) {
-            pathPointer in
-            pathPointer.withMemoryRebound(
-                to: CChar.self,
-                capacity: Int(MAXPATHLEN)
-            ) {
-                String(cString: $0)
-            }
-        }
-        guard !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path).standardizedFileURL
     }
 
     private func foregroundProcess(

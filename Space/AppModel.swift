@@ -87,7 +87,6 @@ final class AppModel {
     }
     private(set) var alertRequest: AlertRequest?
     private(set) var renameRequest: TabRenameRequest?
-    private(set) var memoSaveNotice: MemoSaveNotice?
     private(set) var isFolderImporterPresented = false
     private(set) var isSidebarVisible = true
     private(set) var agentAttentionByTerminalID:
@@ -104,7 +103,6 @@ final class AppModel {
 
     private let folderStore: FolderStore
     private let processInspector: any TerminalProcessInspecting
-    private let memoWriter = MemoWriter()
     private let agentAttentionCoordinator = AgentAttentionCoordinator()
     private var workspaceIndex = TerminalWorkspaceIndex()
     private var terminalRuntimeMonitorTask: Task<Void, Never>?
@@ -377,71 +375,6 @@ final class AppModel {
 
     func dismissFolderImporter() {
         isFolderImporterPresented = false
-    }
-
-    func sendActiveSelectionToMemo() {
-        guard let session = activeTerminalSession,
-              let terminalView = session.terminalView else { return }
-
-        let pasteboard = NSPasteboard.general
-        guard let selection = TerminalSelectionReader.selection(
-            from: pasteboard,
-            copyingSelection: terminalView.copySelectedTextToPasteboard
-        ) else {
-            memoSaveNotice = MemoSaveNotice(
-                message: "No text selected.",
-                systemImage: "exclamationmark.circle"
-            )
-            return
-        }
-
-        guard let memoFileURL = settings.validMemoFileURL else {
-            alertRequest = AlertRequest(
-                title: "Unable to Update Memo",
-                message: "Choose a valid memo file location in Settings.",
-                confirmationTitle: nil,
-                action: nil
-            )
-            return
-        }
-
-        let fallbackWorkingDirectoryURL = session.currentWorkingDirectoryURL
-        let processInspectionRequest = session.processInspectionRequest
-        let inspector = processInspector
-        let writer = memoWriter
-        Task { [weak self] in
-            do {
-                let workingDirectoryURL: URL
-                if let processInspectionRequest,
-                   let inspectedURL = await inspector
-                    .workingDirectoryURL(for: processInspectionRequest) {
-                    workingDirectoryURL = inspectedURL
-                } else {
-                    workingDirectoryURL = fallbackWorkingDirectoryURL
-                }
-                try await writer.append(
-                    selection,
-                    workingDirectoryURL: workingDirectoryURL,
-                    to: memoFileURL
-                )
-                self?.memoSaveNotice = MemoSaveNotice(
-                    message: "Added to memo",
-                    systemImage: "checkmark"
-                )
-            } catch {
-                self?.alertRequest = AlertRequest(
-                    title: "Unable to Update Memo",
-                    message: error.localizedDescription,
-                    confirmationTitle: nil,
-                    action: nil
-                )
-            }
-        }
-    }
-
-    func dismissMemoSaveNotice(_ id: UUID) {
-        guard memoSaveNotice?.id == id else { return }
-        memoSaveNotice = nil
     }
 
     func toggleSidebar() {

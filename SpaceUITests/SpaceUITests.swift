@@ -263,18 +263,6 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testAppendingWithoutASelectionShowsFeedback() throws {
-        let (app, _) = try launchIsolatedApp()
-        defer { app.terminate() }
-
-        app.typeKey("m", modifierFlags: [.command, .shift])
-
-        XCTAssertTrue(
-            app.staticTexts["No text selected."].waitForExistence(timeout: 3)
-        )
-    }
-
-    @MainActor
     func testCollapsedFolderShowsCompletedTitleActivityAsUnread() throws {
         let (app, folders) = try launchIsolatedApp(
             folderNames: ["First", "Second"]

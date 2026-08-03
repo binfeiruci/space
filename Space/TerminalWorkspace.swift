@@ -63,12 +63,6 @@ struct AgentAttentionNotification: Identifiable, Equatable {
     }
 }
 
-struct MemoSaveNotice: Identifiable, Equatable {
-    let id = UUID()
-    let message: String
-    let systemImage: String
-}
-
 enum TerminalSearchAction {
     static func update(query: String) -> String {
         "search:\(query)"

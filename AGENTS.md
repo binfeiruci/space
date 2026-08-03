@@ -1,5 +1,7 @@
 # Space Development Guidelines
 
+import skill in /code/agent/skills/host-command-runner
+
 ## Restarting the Application
 
 To restart Space, run these commands in order on the macOS host. Do not run `open` alone, because it may only activate the existing process.
