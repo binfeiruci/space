@@ -31,6 +31,15 @@ struct SpaceTests {
         return defaults
     }
 
+    @MainActor
+    private func nextMainRunLoop() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
     @Test
     func quitPromptOnlyAppearsForRunningPrograms() {
         let idle = ApplicationTerminationPrompt(runningProgramNames: [])
@@ -125,6 +134,77 @@ struct SpaceTests {
             == FileManager.default.homeDirectoryForCurrentUser)
         #expect(session.terminal.theme == .init())
         #expect(session.terminal.controller.currentConfigSource == .defaultFiles)
+    }
+
+    @Test @MainActor
+    func staleSplitContainerCannotStealTerminalView() async throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let session = try #require(model.activeTerminalSession)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let liveContainer = SpaceTerminalContainerView(
+            frame: window.contentView!.bounds
+        )
+        window.contentView?.addSubview(liveContainer)
+        let terminalView = NSView(frame: .zero)
+        liveContainer.attach(terminalView, for: session)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === liveContainer)
+
+        let replacementContainer = SpaceTerminalContainerView(
+            frame: liveContainer.frame
+        )
+        replacementContainer.attach(terminalView, for: session)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === liveContainer)
+
+        window.contentView?.addSubview(replacementContainer)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === liveContainer)
+
+        liveContainer.removeFromSuperview()
+        replacementContainer.attach(terminalView, for: session)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === replacementContainer)
+
+        liveContainer.attach(terminalView, for: session)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === replacementContainer)
+    }
+
+    @Test @MainActor
+    func reusedSplitContainerClaimsTheNewSession() async throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstSession = try #require(model.activeTerminalSession)
+        model.splitActiveTerminal(direction: .right)
+        let secondSession = try #require(model.activeTerminalSession)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let reusedContainer = SpaceTerminalContainerView(
+            frame: window.contentView!.bounds
+        )
+        window.contentView?.addSubview(reusedContainer)
+        let oldTerminalView = NSView(frame: .zero)
+        reusedContainer.attach(oldTerminalView, for: firstSession)
+        await nextMainRunLoop()
+        #expect(oldTerminalView.superview === reusedContainer)
+
+        let newTerminalView = NSView(frame: .zero)
+        reusedContainer.attach(newTerminalView, for: secondSession)
+        await nextMainRunLoop()
+
+        #expect(firstSession.terminalContainer == nil)
+        #expect(secondSession.terminalContainer === reusedContainer)
+        #expect(oldTerminalView.superview == nil)
+        #expect(newTerminalView.superview === reusedContainer)
     }
 
     @Test @MainActor
@@ -299,6 +379,26 @@ struct SpaceTests {
         #expect(model.activeTerminalID == topRightID)
         #expect(model.selectSplit(in: .left))
         #expect(model.activeTerminalID == topLeftID)
+    }
+
+    @Test @MainActor
+    func closingFocusedSplitSelectsPreviousPane() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTerminalID)
+
+        model.splitActiveTerminal(direction: .right)
+        let secondID = try #require(model.activeTerminalID)
+        let secondSession = try #require(model.activeTerminalSession)
+        model.splitActiveTerminal(direction: .right)
+        let thirdID = try #require(model.activeTerminalID)
+
+        model.closeTerminal(thirdID)
+        #expect(model.activeTerminalID == secondID)
+        #expect(secondSession.terminalFocusRequest == 1)
+
+        model.selectTerminal(firstID)
+        model.closeTerminal(firstID)
+        #expect(model.activeTerminalID == secondID)
     }
 
     @Test @MainActor

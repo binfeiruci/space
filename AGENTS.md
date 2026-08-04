@@ -6,8 +6,10 @@ import skill in /code/agent/skills/host-command-runner
 
 To restart Space, run these commands in order on the macOS host. Do not run `open` alone, because it may only activate the existing process.
 
+Do not pass `CODE_SIGNING_ALLOWED=NO` when running UI tests. The UI test runner must be signed; leave the setting unspecified so Xcode uses its default `Sign to Run Locally` identity. Disabling signing causes macOS to report `SpaceUITests-Runner.app` as damaged.
+
 ```sh
-xcodebuild -project Space.xcodeproj -scheme Space -configuration Debug -derivedDataPath DerivedData -destination platform=macOS CODE_SIGNING_ALLOWED=NO test -only-testing:SpaceUITests/SpaceUITests/testTerminateRunningApplication
+xcodebuild -project Space.xcodeproj -scheme Space -configuration Debug -derivedDataPath DerivedData -destination platform=macOS test -only-testing:SpaceUITests/SpaceUITests/testTerminateRunningApplication
 ```
 
 Only after the UI test displays `TEST SUCCEEDED`, run:

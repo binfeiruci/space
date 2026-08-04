@@ -322,8 +322,8 @@ final class AppModel {
         let paneIDs = closingTab.terminalIDs
         let paneIndex = paneIDs.firstIndex(of: id)
         let replacementPaneID = paneIndex.flatMap { index -> UUID? in
-            if index + 1 < paneIDs.count { return paneIDs[index + 1] }
             if index > 0 { return paneIDs[index - 1] }
+            if index + 1 < paneIDs.count { return paneIDs[index + 1] }
             return nil
         }
 
@@ -334,6 +334,7 @@ final class AppModel {
             if closingTab.focusedTerminalID == id,
                let replacementPaneID {
                 terminalTabs[tabIndex].focusedTerminalID = replacementPaneID
+                terminalSession(id: replacementPaneID)?.requestTerminalFocus()
             }
         } else {
             terminalTabs.remove(at: tabIndex)

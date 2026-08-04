@@ -97,6 +97,40 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testClosingThirdSplitKeepsPreviousSplitInteractive() throws {
+        let app = launchIsolatedApp()
+        defer { app.terminate() }
+
+        let panes = app.descendants(matching: .any).matching(
+            identifier: "terminal-split-pane"
+        )
+        let row = terminalTabRows(in: app).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+        app.typeText("cd /tmp\n")
+        XCTAssertTrue(waitForLabel("tmp", on: row))
+        app.typeText("cd ~\n")
+        XCTAssertTrue(waitForLabel("~", on: row))
+
+        app.typeKey("d", modifierFlags: .command)
+        app.typeKey("d", modifierFlags: [.command, .shift])
+        expectation(
+            for: NSPredicate { _, _ in panes.count == 3 },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 3)
+
+        app.typeKey("w", modifierFlags: .command)
+        expectation(
+            for: NSPredicate { _, _ in panes.count == 2 },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 3)
+
+        app.typeText("cd /tmp\n")
+        XCTAssertTrue(waitForLabel("tmp", on: row))
+    }
+
+    @MainActor
     func testCommandFFocusesTerminalSearchField() throws {
         let app = launchIsolatedApp()
         defer { app.terminate() }
@@ -146,5 +180,17 @@ final class SpaceUITests: XCTestCase {
                 "terminal-tab-row:"
             )
         )
+    }
+
+    @MainActor
+    private func waitForLabel(
+        _ label: String,
+        on element: XCUIElement
+    ) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", label),
+            object: element
+        )
+        return XCTWaiter.wait(for: [expectation], timeout: 3) == .completed
     }
 }

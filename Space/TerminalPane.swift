@@ -250,6 +250,7 @@ private struct GhosttyTerminalPane: View {
                 session: session,
                 isVisible: isVisible,
                 requestsFocus: isFocused && !session.isSearchPresented,
+                focusRequest: session.terminalFocusRequest,
                 onActivate: activate
             )
 
@@ -452,6 +453,7 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
     let session: TerminalSession
     let isVisible: Bool
     let requestsFocus: Bool
+    let focusRequest: Int
     let onActivate: () -> Void
 
     func makeNSView(context: Context) -> SpaceTerminalContainerView {
@@ -467,6 +469,13 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
         configure(container)
     }
 
+    static func dismantleNSView(
+        _ container: SpaceTerminalContainerView,
+        coordinator: ()
+    ) {
+        container.prepareForRemoval()
+    }
+
     private func configure(_ container: SpaceTerminalContainerView) {
         let view: SpaceTerminalView
         if let existing = session.terminalView as? SpaceTerminalView {
@@ -478,39 +487,181 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
         view.delegate = session.terminal
         view.controller = session.terminal.controller
         view.configuration = session.terminal.configuration
-        container.attach(view)
-        view.setSurfaceVisible(isVisible)
-        view.onActivate = onActivate
-        view.requestsFocus = requestsFocus
+        container.configure(
+            view,
+            for: session,
+            isVisible: isVisible,
+            requestsFocus: requestsFocus,
+            focusRequest: focusRequest,
+            onActivate: onActivate
+        )
     }
 }
 
 @MainActor
-private final class SpaceTerminalContainerView: NSView {
-    func attach(_ view: SpaceTerminalView) {
-        guard view.superview !== self else { return }
-        view.removeFromSuperview()
-        view.frame = bounds
-        view.autoresizingMask = [.width, .height]
-        addSubview(view)
+final class SpaceTerminalContainerView: NSView {
+    private static let attachmentRetryDelay: TimeInterval = 0.01
+    private static let maximumAttachmentRetries = 20
+
+    private weak var terminalView: NSView?
+    private weak var terminalSession: TerminalSession?
+    private var attachmentRequest = 0
+    private var attachmentRetryCount = 0
+    private var isVisible = false
+    private var requestsFocus = false
+    private var focusRequest = 0
+    private var onActivate: (() -> Void)?
+
+    func configure(
+        _ view: NSView,
+        for session: TerminalSession,
+        isVisible: Bool,
+        requestsFocus: Bool,
+        focusRequest: Int,
+        onActivate: @escaping () -> Void
+    ) {
+        self.isVisible = isVisible
+        self.requestsFocus = requestsFocus
+        self.focusRequest = focusRequest
+        self.onActivate = onActivate
+        attach(view, for: session)
+    }
+
+    func attach(_ view: NSView, for session: TerminalSession) {
+        if terminalSession !== session {
+            attachmentRequest &+= 1
+            attachmentRetryCount = 0
+            if terminalSession?.terminalContainer === self {
+                terminalSession?.terminalContainer = nil
+            }
+            if terminalView?.superview === self {
+                terminalView?.removeFromSuperview()
+            }
+        }
+        terminalView = view
+        terminalSession = session
+        guard window != nil else { return }
+        scheduleAttachment()
+    }
+
+    func prepareForRemoval() {
+        attachmentRequest &+= 1
+        attachmentRetryCount = 0
+        if terminalSession?.terminalContainer === self {
+            terminalSession?.terminalContainer = nil
+        }
+        terminalView = nil
+        terminalSession = nil
+        onActivate = nil
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else {
+            attachmentRequest &+= 1
+            attachmentRetryCount = 0
+            if terminalSession?.terminalContainer === self {
+                terminalSession?.terminalContainer = nil
+            }
+            return
+        }
+        scheduleAttachment()
+    }
+
+    private func scheduleAttachment(after delay: TimeInterval = 0) {
+        attachmentRequest &+= 1
+        let request = attachmentRequest
+        // Collapsing a split temporarily creates both the old and new
+        // representable containers. Wait for SwiftUI to dismantle the old
+        // hierarchy so a detached container cannot reclaim this terminal.
+        if delay == 0 {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, attachmentRequest == request else { return }
+                attachIfReady()
+            }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                [weak self] in
+                guard let self, attachmentRequest == request else { return }
+                attachIfReady()
+            }
+        }
+    }
+
+    private func attachIfReady() {
+        guard window != nil,
+              let terminalSession,
+              let terminalView
+        else { return }
+        if let owner = terminalSession.terminalContainer,
+           owner !== self,
+           owner.window != nil {
+            guard attachmentRetryCount < Self.maximumAttachmentRetries else {
+                return
+            }
+            attachmentRetryCount += 1
+            scheduleAttachment(after: Self.attachmentRetryDelay)
+            return
+        }
+        attachmentRetryCount = 0
+        terminalSession.terminalContainer = self
+        guard terminalView.superview !== self else {
+            applyPresentation(to: terminalView)
+            return
+        }
+        terminalView.removeFromSuperview()
+        terminalView.frame = bounds
+        terminalView.autoresizingMask = [.width, .height]
+        addSubview(terminalView)
+        applyPresentation(to: terminalView)
+        guard let terminalView = terminalView as? SpaceTerminalView else {
+            return
+        }
+        DispatchQueue.main.async { [weak self, weak terminalView] in
+            guard let self, let terminalView,
+                  terminalView.superview === self
+            else { return }
+            terminalView.finishAttachment()
+        }
+    }
+
+    private func applyPresentation(to view: NSView) {
+        guard let view = view as? SpaceTerminalView else { return }
+        view.setSurfaceVisible(isVisible)
+        view.onActivate = onActivate
+        view.requestFocus(focusRequest, enabled: requestsFocus)
     }
 }
 
 @MainActor
 private final class SpaceTerminalView: TerminalView {
+    private static let maximumFocusAttempts = 5
+    private static let focusRetryDelay: TimeInterval = 0.05
+
     var onActivate: (() -> Void)?
-    var requestsFocus = false {
-        didSet {
-            guard requestsFocus, requestsFocus != oldValue else { return }
-            applyFocusRequest()
+    private var requestsFocus = false
+    private var pendingFocusRequest: Int?
+    private var completedFocusRequest: Int?
+    private var focusAttemptCount = 0
+
+    func requestFocus(_ request: Int, enabled: Bool) {
+        requestsFocus = enabled
+        guard enabled else {
+            pendingFocusRequest = nil
+            completedFocusRequest = nil
+            focusAttemptCount = 0
+            return
         }
+        if pendingFocusRequest != request {
+            pendingFocusRequest = request
+            focusAttemptCount = 0
+        }
+        focusIfPossible()
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if requestsFocus {
-            applyFocusRequest()
-        }
+        focusIfPossible()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -518,11 +669,35 @@ private final class SpaceTerminalView: TerminalView {
         super.mouseDown(with: event)
     }
 
-    private func applyFocusRequest() {
-        guard let window else { return }
-        window.initialFirstResponder = self
-        if window.firstResponder !== self {
-            window.makeFirstResponder(self)
+    func finishAttachment() {
+        fitToSize()
+        focusIfPossible()
+    }
+
+    private func focusIfPossible() {
+        guard requestsFocus,
+              let request = pendingFocusRequest,
+              completedFocusRequest != request,
+              let window,
+              focusAttemptCount < Self.maximumFocusAttempts
+        else { return }
+        focusAttemptCount += 1
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window,
+                  requestsFocus,
+                  pendingFocusRequest == request
+            else { return }
+            window.initialFirstResponder = self
+            if window.firstResponder === self
+                || window.makeFirstResponder(self) {
+                completedFocusRequest = request
+            } else {
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Self.focusRetryDelay
+                ) {
+                    self.focusIfPossible()
+                }
+            }
         }
     }
 }

@@ -10,8 +10,10 @@ final class TerminalSession: ObservableObject, Identifiable {
     let terminal: TerminalViewState
     let defaultShellName: String
     var terminalView: TerminalView?
+    weak var terminalContainer: SpaceTerminalContainerView?
     @Published var isSearchPresented = false
     @Published var searchQuery = ""
+    @Published private(set) var terminalFocusRequest = 0
     @Published private(set) var searchFocusRequest = 0
     @Published private(set) var currentProcessName: String?
 
@@ -59,6 +61,10 @@ final class TerminalSession: ObservableObject, Identifiable {
               currentProcessName != defaultShellName
         else { return nil }
         return currentProcessName
+    }
+
+    func requestTerminalFocus() {
+        terminalFocusRequest &+= 1
     }
 
     func presentSearch() {
