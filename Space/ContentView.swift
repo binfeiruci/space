@@ -91,45 +91,59 @@ private struct SidebarStatusDot: View {
 private struct TabSidebar: View {
     @Environment(AppModel.self) private var model: AppModel
 
-    private var selection: Binding<UUID?> {
+    private var selection: Binding<TerminalTabSidebarItem?> {
         Binding(
-            get: { model.activeTabID },
-            set: { if let id = $0 { model.selectTab(id) } }
+            get: { model.activeTabID.map(TerminalTabSidebarItem.tab) },
+            set: {
+                guard case let .tab(id)? = $0 else { return }
+                model.selectTab(id)
+            }
         )
     }
 
     var body: some View {
         List(selection: selection) {
-            ForEach(model.terminalTabs) { tab in
-                sidebarRow(tab)
+            ForEach(model.tabSidebarItems) { item in
+                sidebarItem(item)
             }
-            .onMove(perform: moveTabs)
+            .onMove(perform: model.moveTabSidebarItems)
         }
         .listStyle(.sidebar)
     }
 
     @ViewBuilder
-    private func sidebarRow(_ tab: TerminalTabState) -> some View {
-        if let session = model.terminalSession(id: tab.focusedTerminalID) {
-            SidebarTerminalTabRow(
-                tab: tab,
-                session: session,
-                shortcutLabel: shortcutLabel(for: tab),
-                accessibilityIdentifier: "terminal-tab-row:"
-                    + tab.id.uuidString,
-                colors: SidebarRowColors()
-            )
-            .tag(tab.id)
+    private func sidebarItem(_ item: TerminalTabSidebarItem) -> some View {
+        switch item {
+        case let .tab(id):
+            if let tab = model.terminalTab(id: id),
+               let session = model.terminalSession(id: tab.focusedTerminalID) {
+                SidebarTerminalTabRow(
+                    tab: tab,
+                    session: session,
+                    shortcutLabel: shortcutLabel(for: tab),
+                    accessibilityIdentifier: "terminal-tab-row:"
+                        + tab.id.uuidString,
+                    colors: SidebarRowColors()
+                )
+                .tag(item)
+            }
+        case let .divider(id):
+            Divider()
+                .padding(.vertical, 6)
+                .listRowInsets(
+                    EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 10)
+                )
+                .accessibilityLabel("Tab divider")
+                .accessibilityIdentifier(
+                    "terminal-tab-divider:" + id.uuidString
+                )
+                .tag(item)
+                .contextMenu {
+                    Button("Remove Divider") {
+                        model.removeTabDivider(id: id)
+                    }
+                }
         }
-    }
-
-    private func moveTabs(
-        from source: IndexSet,
-        to destination: Int
-    ) {
-        var tabs = model.terminalTabs
-        tabs.move(fromOffsets: source, toOffset: destination)
-        model.setTabOrder(tabs.map(\.id))
     }
 
     private func shortcutLabel(for tab: TerminalTabState) -> String? {
@@ -230,6 +244,10 @@ private struct SidebarTerminalTabRow: View {
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .contextMenu {
             Button("Close Tab") { model.requestCloseTab(tab.id) }
+
+            Button("Add Divider Below") {
+                model.addTabDivider(after: tab.id)
+            }
         }
     }
 }

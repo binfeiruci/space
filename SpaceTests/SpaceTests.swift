@@ -181,11 +181,87 @@ struct SpaceTests {
         model.openNewTerminal()
         let secondID = try #require(model.activeTabID)
 
-        model.setTabOrder([secondID, firstID])
+        model.moveTabSidebarItems(from: IndexSet(integer: 0), to: 2)
 
         #expect(model.terminalTabs.map(\.id) == [secondID, firstID])
         #expect(model.terminalSession(id: firstSession.id) === firstSession)
         #expect(model.terminalTab(id: firstID)?.terminalIDs == firstTerminalIDs)
+    }
+
+    @Test @MainActor
+    func tabDividerIsAnIndependentReorderableSidebarItem() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTabID)
+        model.openNewTerminal()
+        let secondID = try #require(model.activeTabID)
+        model.openNewTerminal()
+        let thirdID = try #require(model.activeTabID)
+        model.openNewTerminal()
+        let fourthID = try #require(model.activeTabID)
+
+        model.addTabDivider(after: secondID)
+        let dividerID = try #require(model.tabSidebarItems[2].dividerID)
+
+        model.moveTabSidebarItems(from: IndexSet(integer: 0), to: 4)
+        #expect(model.terminalTabs.map(\.id) == [
+            secondID, thirdID, firstID, fourthID,
+        ])
+
+        model.moveTabSidebarItems(from: IndexSet(integer: 1), to: 4)
+        #expect(model.tabSidebarItems[3].dividerID == dividerID)
+
+        model.removeTabDivider(id: dividerID)
+        #expect(!model.tabSidebarItems.contains(.divider(dividerID)))
+    }
+
+    @Test @MainActor
+    func singletonTabCanMoveAcrossDivider() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTabID)
+        model.openNewTerminal()
+        let secondID = try #require(model.activeTabID)
+        model.addTabDivider(after: firstID)
+        let dividerID = try #require(model.tabSidebarItems[1].dividerID)
+
+        model.moveTabSidebarItems(from: IndexSet(integer: 0), to: 3)
+        #expect(model.tabSidebarItems == [
+            .divider(dividerID), .tab(secondID), .tab(firstID),
+        ])
+        #expect(model.terminalTabs.map(\.id) == [secondID, firstID])
+
+        model.moveTabSidebarItems(from: IndexSet(integer: 0), to: 2)
+        #expect(model.tabSidebarItems == [
+            .tab(secondID), .divider(dividerID), .tab(firstID),
+        ])
+    }
+
+    @Test @MainActor
+    func dividerCanBeAddedAfterLastTab() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTabID)
+        model.openNewTerminal()
+        let lastID = try #require(model.activeTabID)
+
+        model.addTabDivider(after: lastID)
+        let dividerID = try #require(model.tabSidebarItems.last?.dividerID)
+        #expect(model.tabSidebarItems == [
+            .tab(firstID), .tab(lastID), .divider(dividerID),
+        ])
+    }
+
+    @Test @MainActor
+    func multipleDividersCanBeAddedAfterTheSameTab() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let tabID = try #require(model.activeTabID)
+
+        model.addTabDivider(after: tabID)
+        model.addTabDivider(after: tabID)
+
+        #expect(model.tabSidebarItems.count == 3)
+        #expect(model.tabSidebarItems[0] == .tab(tabID))
+        #expect(model.tabSidebarItems[1].dividerID != nil)
+        #expect(model.tabSidebarItems[2].dividerID != nil)
+        #expect(model.tabSidebarItems[1] != model.tabSidebarItems[2])
     }
 
     @Test @MainActor
@@ -196,7 +272,7 @@ struct SpaceTests {
         let secondID = try #require(model.activeTabID)
         model.openNewTerminal()
         let thirdID = try #require(model.activeTabID)
-        model.setTabOrder([secondID, thirdID, firstID])
+        model.moveTabSidebarItems(from: IndexSet(integer: 0), to: 3)
         #expect(model.terminalTabs.map(\.id) == [secondID, thirdID, firstID])
 
         model.selectTab(secondID)

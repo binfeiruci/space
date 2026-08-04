@@ -91,6 +91,7 @@ echo "Building Ghostty commit $commit for arm64..."
     cd "$source_dir"
     zig build \
         -Doptimize=ReleaseFast \
+        -Dsentry=false \
         -Demit-macos-app=false \
         -Demit-xcframework=true \
         -Dxcframework-target=native

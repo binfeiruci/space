@@ -39,6 +39,45 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testTabDividerCanBeAddedAndRemoved() throws {
+        let app = launchIsolatedApp()
+        defer { app.terminate() }
+
+        let rows = terminalTabRows(in: app)
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 3))
+        app.typeKey("t", modifierFlags: .command)
+        expectation(
+            for: NSPredicate { _, _ in rows.count == 2 },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 3)
+
+        let dividers = app.descendants(matching: .any).matching(
+            NSPredicate(
+                format: "identifier BEGINSWITH %@",
+                "terminal-tab-divider:"
+            )
+        )
+        rows.firstMatch.rightClick()
+        let addDivider = app.menuItems["Add Divider Below"]
+        XCTAssertTrue(addDivider.waitForExistence(timeout: 3))
+        addDivider.click()
+        let divider = dividers.firstMatch
+        XCTAssertTrue(divider.waitForExistence(timeout: 3))
+
+        rows.firstMatch.rightClick()
+        XCTAssertTrue(addDivider.waitForExistence(timeout: 3))
+        XCTAssertTrue(addDivider.isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+
+        divider.rightClick()
+        let removeDivider = app.menuItems["Remove Divider"]
+        XCTAssertTrue(removeDivider.waitForExistence(timeout: 3))
+        removeDivider.click()
+        XCTAssertEqual(dividers.count, 0)
+    }
+
+    @MainActor
     func testNewSplitsCreateExpectedPanes() throws {
         let app = launchIsolatedApp()
         defer { app.terminate() }

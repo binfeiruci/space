@@ -5,6 +5,23 @@ import Foundation
 import GhosttyTerminal
 import Observation
 
+enum TerminalTabSidebarItem: Hashable, Identifiable {
+    case tab(UUID)
+    case divider(UUID)
+
+    var id: Self { self }
+
+    var tabID: UUID? {
+        guard case let .tab(id) = self else { return nil }
+        return id
+    }
+
+    var dividerID: UUID? {
+        guard case let .divider(id) = self else { return nil }
+        return id
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -20,6 +37,7 @@ final class AppModel {
     private(set) var alertRequest: AlertRequest?
     private(set) var isSidebarVisible = true
     private(set) var unreadTitleTabIDs: Set<UUID> = []
+    private(set) var tabSidebarItems: [TerminalTabSidebarItem] = []
     private var activeTitleTerminalIDs: Set<UUID> = []
     private(set) var terminalLayoutRevision = 0
 
@@ -112,14 +130,37 @@ final class AppModel {
         openNewTerminal()
     }
 
-    func setTabOrder(_ orderedTabIDs: [UUID]) {
-        guard orderedTabIDs.count == terminalTabs.count,
-              Set(orderedTabIDs) == Set(terminalTabs.map(\.id))
+    func moveTabSidebarItems(from source: IndexSet, to destination: Int) {
+        guard !source.isEmpty,
+              source.allSatisfy(tabSidebarItems.indices.contains),
+              (0 ... tabSidebarItems.count).contains(destination)
         else { return }
+        var reorderedItems = tabSidebarItems
+        let movedItems = source.map { reorderedItems[$0] }
+        for index in source.reversed() {
+            reorderedItems.remove(at: index)
+        }
+        let removedBeforeDestination = source.count(in: 0 ..< destination)
+        reorderedItems.insert(
+            contentsOf: movedItems,
+            at: destination - removedBeforeDestination
+        )
+
         let tabsByID = Dictionary(
             uniqueKeysWithValues: terminalTabs.map { ($0.id, $0) }
         )
+        let orderedTabIDs = reorderedItems.compactMap(\.tabID)
+        tabSidebarItems = reorderedItems
         terminalTabs = orderedTabIDs.compactMap { tabsByID[$0] }
+    }
+
+    func addTabDivider(after id: UUID) {
+        guard let index = sidebarTabIndex(id: id) else { return }
+        tabSidebarItems.insert(.divider(UUID()), at: index + 1)
+    }
+
+    func removeTabDivider(id: UUID) {
+        tabSidebarItems.removeAll { $0.dividerID == id }
     }
 
     func splitActiveTerminal(direction: TerminalSplitDirection) {
@@ -296,6 +337,7 @@ final class AppModel {
             }
         } else {
             terminalTabs.remove(at: tabIndex)
+            tabSidebarItems.removeAll { $0.tabID == closingTab.id }
             unreadTitleTabIDs.remove(closingTab.id)
         }
         terminalSessions.remove(at: sessionIndex)
@@ -337,7 +379,12 @@ final class AppModel {
             root: .pane(session.id),
             focusedTerminalID: session.id
         ))
+        tabSidebarItems.append(.tab(session.id))
         return session
+    }
+
+    private func sidebarTabIndex(id: UUID) -> Int? {
+        tabSidebarItems.firstIndex { $0.tabID == id }
     }
 
     private func terminalSessionIndex(id: UUID) -> Int? {
