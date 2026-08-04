@@ -259,11 +259,11 @@ private struct GhosttyTerminalPane: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-            .background(Color(nsColor: .textBackgroundColor))
-            .animation(
-                .easeOut(duration: 0.12),
-                value: session.isSearchPresented
-            )
+        .background(Color(nsColor: .textBackgroundColor))
+        .animation(
+            .easeOut(duration: 0.12),
+            value: session.isSearchPresented
+        )
     }
 }
 
@@ -475,7 +475,6 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
             view = SpaceTerminalView(frame: .zero)
             session.terminalView = view
         }
-        view.session = session
         view.delegate = session.terminal
         view.controller = session.terminal.controller
         view.configuration = session.terminal.configuration
@@ -483,28 +482,22 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
         view.setSurfaceVisible(isVisible)
         view.onActivate = onActivate
         view.requestsFocus = requestsFocus
-        session.sendPendingInputIfReady()
     }
 }
 
 @MainActor
 private final class SpaceTerminalContainerView: NSView {
-    weak var terminalView: SpaceTerminalView?
-
     func attach(_ view: SpaceTerminalView) {
         guard view.superview !== self else { return }
         view.removeFromSuperview()
         view.frame = bounds
         view.autoresizingMask = [.width, .height]
         addSubview(view)
-        terminalView = view
     }
-
 }
 
 @MainActor
 private final class SpaceTerminalView: TerminalView {
-    weak var session: TerminalSession?
     var onActivate: (() -> Void)?
     var requestsFocus = false {
         didSet {
@@ -515,7 +508,6 @@ private final class SpaceTerminalView: TerminalView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        session?.sendPendingInputIfReady()
         if requestsFocus {
             applyFocusRequest()
         }

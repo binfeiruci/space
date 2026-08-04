@@ -14,16 +14,12 @@ final class TerminalSession: ObservableObject, Identifiable {
     @Published var searchQuery = ""
     @Published private(set) var searchFocusRequest = 0
     @Published private(set) var currentProcessName: String?
-    private var pendingInput: String?
 
     init(
         workingDirectoryURL: URL,
-        settings: AppSettings? = nil,
         defaultShellPath: String? = nil,
-        surfaceContext: TerminalSurfaceContext = .window,
-        initialInput: String? = nil
+        surfaceContext: TerminalSurfaceContext = .window
     ) {
-        let settings = settings ?? AppSettings()
         self.workingDirectoryURL = workingDirectoryURL.standardizedFileURL
         let shellPath = defaultShellPath ?? Self.loginShellPath
         defaultShellName = Self.processName(
@@ -31,13 +27,13 @@ final class TerminalSession: ObservableObject, Identifiable {
         ) ?? "shell"
 
         terminal = TerminalViewState(
-            configSource: settings.ghosttyConfigSource
+            configSource: .defaultFiles,
+            theme: TerminalTheme()
         )
         terminal.configuration = TerminalSurfaceOptions(
             workingDirectory: workingDirectoryURL.path,
             context: surfaceContext
         )
-        pendingInput = initialInput
     }
 
     var processInspectionRequest: TerminalProcessInspector.Request? {
@@ -56,10 +52,6 @@ final class TerminalSession: ObservableObject, Identifiable {
     func updateCurrentProcessName(_ name: String?) {
         guard currentProcessName != name else { return }
         currentProcessName = name
-    }
-
-    var isRunningForegroundProgram: Bool {
-        runningForegroundProcessName != nil
     }
 
     var runningForegroundProcessName: String? {
@@ -93,30 +85,42 @@ final class TerminalSession: ObservableObject, Identifiable {
         isSearchPresented = false
     }
 
-    func sendPendingInputIfReady() {
-        guard let pendingInput, terminal.send(pendingInput) else { return }
-        self.pendingInput = nil
-    }
-
     func displayTitle(
         terminalTitle: String,
-        foregroundProcessName: String?
+        foregroundProcessName: String?,
+        currentWorkingDirectory: String? = nil
     ) -> String {
         let processName = foregroundProcessName.flatMap(Self.processName(from:))
-        if processName == defaultShellName { return defaultShellName }
+        if processName == defaultShellName {
+            return directoryName(
+                currentWorkingDirectory: currentWorkingDirectory
+            )
+        }
 
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty, !Self.isPathTitle(title) {
-            return title
-        }
+        if !title.isEmpty { return title }
         return processName ?? defaultShellName
     }
 
-    private static func isPathTitle(_ title: String) -> Bool {
-        title == "~"
-            || title.hasPrefix("~/")
-            || title.hasPrefix("/")
-            || title.hasPrefix("file://")
+    private func directoryName(currentWorkingDirectory: String?) -> String {
+        let value = currentWorkingDirectory?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentURL: URL? = if let value, !value.isEmpty {
+            if let fileURL = URL(string: value), fileURL.isFileURL {
+                fileURL
+            } else {
+                URL(fileURLWithPath: value)
+            }
+        } else {
+            nil
+        }
+        let url = (currentURL ?? workingDirectoryURL).standardizedFileURL
+        let homePath = FileManager.default.homeDirectoryForCurrentUser
+            .standardizedFileURL.path
+        if url.path == homePath {
+            return "~"
+        }
+        return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
     }
 
     private static var loginShellPath: String {

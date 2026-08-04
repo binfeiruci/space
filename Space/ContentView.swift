@@ -1,180 +1,60 @@
 import AppKit
 import GhosttyTerminal
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppModel.self) private var model: AppModel
 
-    private var folderImporterIsPresented: Binding<Bool> {
-        Binding(
-            get: { model.isFolderImporterPresented },
-            set: { isPresented in
-                if !isPresented { model.dismissFolderImporter() }
-            }
-        )
-    }
-
     private var alertRequest: Binding<AlertRequest?> {
         Binding(
             get: { model.alertRequest },
-            set: { state in
-                if state == nil { model.dismissAlert() }
-            }
+            set: { if $0 == nil { model.dismissAlert() } }
         )
     }
 
-    private var renameRequest: Binding<TabRenameRequest?> {
+    private var splitViewVisibility: Binding<NavigationSplitViewVisibility> {
         Binding(
-            get: { model.renameRequest },
-            set: { request in
-                if request == nil { model.dismissRenameRequest() }
-            }
+            get: { model.isSidebarVisible ? .all : .detailOnly },
+            set: { model.setSidebarVisible($0 != .detailOnly) }
         )
     }
 
-    private var navigationSplitViewVisibility:
-        Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: {
-                model.isSidebarVisible ? .all : .detailOnly
-            },
-            set: { visibility in
-                model.setSidebarVisible(visibility != .detailOnly)
-            }
-        )
-    }
-
-    private var navigationSplitViewContent: some View {
-        NavigationSplitView(
-            columnVisibility: navigationSplitViewVisibility
-        ) {
-            FolderSidebar()
+    var body: some View {
+        NavigationSplitView(columnVisibility: splitViewVisibility) {
+            TabSidebar()
         } detail: {
             TerminalArea()
                 .ignoresSafeArea(.container, edges: .top)
         }
-    }
-
-    @ViewBuilder
-    private var navigationSplitView: some View {
-        if #available(macOS 15.0, *) {
-            navigationSplitViewContent
-                .windowToolbarFullScreenVisibility(.onHover)
-        } else {
-            navigationSplitViewContent
+        .modifier(FullScreenToolbarModifier())
+        .background(Color(nsColor: .windowBackgroundColor))
+        .background(WindowConfigurator(model: model))
+        .alert(item: alertRequest) { state in
+            appAlert(state)
         }
-    }
-
-    var body: some View {
-        navigationSplitView
-            .background(Color(nsColor: .windowBackgroundColor))
-            .background(WindowConfigurator(
-                model: model
-            ))
-            .fileImporter(
-                isPresented: folderImporterIsPresented,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: true
-            ) { result in
-                model.dismissFolderImporter()
-                switch result {
-                case let .success(urls):
-                    model.addFolders(urls)
-                case let .failure(error):
-                    guard (error as NSError).code != NSUserCancelledError else {
-                        return
-                    }
-                    model.presentFolderImportError(error)
-                }
-            }
-            .alert(item: alertRequest) { state in
-                appAlert(state)
-            }
-            .sheet(item: renameRequest) { request in
-                TabRenameSheet(request: request)
-                    .environment(model)
-            }
     }
 
     private func appAlert(_ state: AlertRequest) -> Alert {
-        guard let confirmationTitle = state.confirmationTitle,
-              state.action != nil else {
-            return Alert(
-                title: Text(state.title),
-                message: Text(state.message),
-                dismissButton: .default(Text("OK")) {
-                    model.dismissAlert()
-                }
-            )
-        }
-        return Alert(
+        Alert(
             title: Text(state.title),
             message: Text(state.message),
-            primaryButton: .destructive(Text(confirmationTitle)) {
+            primaryButton: .destructive(Text(state.confirmationTitle)) {
                 model.confirmAlert(state)
             },
-            secondaryButton: .cancel {
-                model.dismissAlert()
-            }
+            secondaryButton: .cancel { model.dismissAlert() }
         )
     }
 }
 
-private struct TabRenameSheet: View {
-    @Environment(AppModel.self) private var model: AppModel
-    @FocusState private var isNameFocused: Bool
-    let request: TabRenameRequest
-    @State private var title: String
-
-    init(request: TabRenameRequest) {
-        self.request = request
-        _title = State(initialValue: request.initialTitle)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Tab")
-                .font(.headline)
-
-            TextField(
-                "Tab Name",
-                text: $title,
-                prompt: Text("Automatic: \(request.automaticTitle)")
-            )
-                .textFieldStyle(.roundedBorder)
-                .focused($isNameFocused)
-                .onSubmit(save)
-
-            Text("Leave blank to use the automatic title.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) {
-                    model.dismissRenameRequest()
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Button("Save", action: save)
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .onAppear {
-            isNameFocused = true
+private struct FullScreenToolbarModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.windowToolbarFullScreenVisibility(.onHover)
+        } else {
+            content
         }
     }
-
-    private func save() {
-        model.saveTabRename(request, title: title)
-    }
-}
-
-private enum SidebarSelection: Hashable {
-    case folder(String)
-    case tab(UUID)
 }
 
 private struct SidebarRowColors {
@@ -190,426 +70,75 @@ private struct SidebarRowColors {
         _ color: NSColor,
         appearance: NSAppearance
     ) -> Color {
-        var resolvedColor = color.cgColor
-        appearance.performAsCurrentDrawingAppearance {
-            resolvedColor = color.cgColor
-        }
-        return Color(cgColor: resolvedColor)
+        var result = color.cgColor
+        appearance.performAsCurrentDrawingAppearance { result = color.cgColor }
+        return Color(cgColor: result)
     }
 }
 
 private struct SidebarStatusDot: View {
-    let color: Color
-    let label: String
     let identifier: String
 
     var body: some View {
         Circle()
-            .fill(color)
+            .fill(Color.accentColor)
             .frame(width: 6, height: 6)
-            .accessibilityLabel(label)
+            .accessibilityLabel("Unread terminal activity")
             .accessibilityIdentifier(identifier)
     }
 }
 
-private struct FolderSidebar: View {
+private struct TabSidebar: View {
     @Environment(AppModel.self) private var model: AppModel
-    @State private var expandedFolderPaths: Set<String> = []
-    @State private var unreadCollapsedFolderPaths: Set<String> = []
 
-    private var selection: Binding<SidebarSelection?> {
+    private var selection: Binding<UUID?> {
         Binding(
-            get: {
-                model.activeTerminalTab.map { .tab($0.id) }
-            },
-            set: { selection in
-                switch selection {
-                case let .folder(path):
-                    guard let folder = model.folders.first(where: {
-                        $0.id == path
-                    }) else { return }
-                    model.activateFolder(folder.url)
-                case let .tab(id):
-                    model.selectTab(id)
-                case nil:
-                    break
-                }
-            }
+            get: { model.activeTabID },
+            set: { if let id = $0 { model.selectTab(id) } }
         )
     }
 
-    private var foldersWithTabs: [Folder] {
-        model.foldersWithTabs
-    }
-
-    private var tabbedFolderIDs: [String] {
-        model.foldersWithTabs.map(\.id).sorted()
-    }
-
     var body: some View {
-        ScrollViewReader { proxy in
-            List(selection: selection) {
-                let standaloneTabs = tabs(ownerFolderURL: nil)
-                if !standaloneTabs.isEmpty || !foldersWithTabs.isEmpty {
-                    Section("Tabs") {
-                        if !standaloneTabs.isEmpty {
-                            tabRows(
-                                standaloneTabs,
-                                accessibilityPrefix: "standalone-terminal-tab-row:"
-                            )
-                        }
-
-                        if !foldersWithTabs.isEmpty {
-                            tabbedFolderRows(foldersWithTabs)
-                        }
-                    }
-                }
+        List(selection: selection) {
+            ForEach(model.terminalTabs) { tab in
+                sidebarRow(tab)
             }
-            .id(tabbedFolderIDs)
-            .listStyle(.sidebar)
-            .onAppear(perform: expandActiveFolder)
-            .onChange(of: model.activeFolderURL) { _, url in
-                guard let url else { return }
-                expandFolder(at: url.standardizedFileURL.path)
-                withAnimation(.easeOut(duration: 0.12)) {
-                    proxy.scrollTo(
-                        sidebarItemID(for: url),
-                        anchor: .center
-                    )
-                }
-            }
-            .onChange(of: model.activeTerminalTab?.id) { _, _ in
-                expandActiveFolder()
-            }
-            .onChange(of: model.latestUnreadTitleActivity) {
-                _, activity in
-                recordUnreadTitleActivity(activity)
-            }
-            .onChange(of: model.unreadTitleTabIDs) { _, _ in
-                unreadCollapsedFolderPaths.formIntersection(
-                    model.unreadTitleFolderPaths
-                )
-            }
+            .onMove(perform: moveTabs)
         }
+        .listStyle(.sidebar)
     }
 
-    private func tabbedFolderRows(
-        _ folders: [Folder]
-    ) -> some View {
-        ForEach(folders) { folder in
-            let folderTabs = tabs(ownerFolderURL: folder.url)
-            DisclosureGroup(
-                isExpanded: expansionBinding(for: folder)
-            ) {
-                if isExpanded(folder) {
-                    tabRows(
-                        folderTabs,
-                        accessibilityPrefix: "terminal-tab-row:"
-                    )
-                }
-            } label: {
-                FolderRow(
-                    folder: folder,
-                    parentPath: disambiguatingParentPath(for: folder),
-                    isExpanded: isExpanded(folder),
-                    hasUnreadTitleActivity:
-                        unreadCollapsedFolderPaths.contains(
-                            folder.url.standardizedFileURL.path
-                        ),
-                    colors: rowColors
-                )
-            }
-            .tag(SidebarSelection.folder(folder.id))
-            .id(sidebarItemID(for: folder.url))
-        }
-        .onMove { source, destination in
-            moveFolders(
-                folders,
-                fromOffsets: source,
-                toOffset: destination
+    @ViewBuilder
+    private func sidebarRow(_ tab: TerminalTabState) -> some View {
+        if let session = model.terminalSession(id: tab.focusedTerminalID) {
+            SidebarTerminalTabRow(
+                tab: tab,
+                session: session,
+                shortcutLabel: shortcutLabel(for: tab),
+                accessibilityIdentifier: "terminal-tab-row:"
+                    + tab.id.uuidString,
+                colors: SidebarRowColors()
             )
+            .tag(tab.id)
         }
-    }
-
-    private func tabRows(
-        _ tabs: [TerminalTabState],
-        accessibilityPrefix: String
-    ) -> some View {
-        ForEach(tabs) { tab in
-            if let session = model.terminalSession(
-                id: tab.focusedTerminalID
-            ) {
-                SidebarTerminalTabRow(
-                    tab: tab,
-                    session: session,
-                    shortcutLabel: shortcutLabel(for: tab),
-                    accessibilityIdentifier:
-                        accessibilityPrefix + tab.id.uuidString,
-                    colors: rowColors
-                )
-                .tag(SidebarSelection.tab(tab.id))
-                .id(sidebarTabID(tab.id))
-            }
-        }
-        .onMove { source, destination in
-            moveTabs(
-                tabs,
-                fromOffsets: source,
-                toOffset: destination
-            )
-        }
-    }
-
-    private func moveFolders(
-        _ folders: [Folder],
-        fromOffsets source: IndexSet,
-        toOffset destination: Int
-    ) {
-        model.setFolderOrder(reordering(
-            folders,
-            within: model.trackedFoldersInOrder,
-            matching: model.folderHasTabs,
-            fromOffsets: source,
-            toOffset: destination
-        ))
     }
 
     private func moveTabs(
-        _ tabs: [TerminalTabState],
-        fromOffsets source: IndexSet,
-        toOffset destination: Int
+        from source: IndexSet,
+        to destination: Int
     ) {
-        let ownerPath = tabs.first?.ownerFolderURL?.standardizedFileURL.path
-        let allTabs = reordering(
-            tabs,
-            within: model.terminalTabs,
-            matching: {
-                $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
-            },
-            fromOffsets: source,
-            toOffset: destination
-        )
-        model.setTabOrder(allTabs.map(\.id))
-    }
-
-    private func reordering<Element>(
-        _ groupedElements: [Element],
-        within allElements: [Element],
-        matching predicate: (Element) -> Bool,
-        fromOffsets source: IndexSet,
-        toOffset destination: Int
-    ) -> [Element] {
-        var reorderedElements = groupedElements
-        reorderedElements.move(
-            fromOffsets: source,
-            toOffset: destination
-        )
-        var reordered = reorderedElements.makeIterator()
-        return allElements.map { element in
-            predicate(element) ? reordered.next() ?? element : element
-        }
-    }
-
-    private func tabs(
-        ownerFolderURL: URL?
-    ) -> [TerminalTabState] {
-        let ownerPath = ownerFolderURL?.standardizedFileURL.path
-        return model.terminalTabs.filter {
-            $0.ownerFolderURL?.standardizedFileURL.path == ownerPath
-        }
-    }
-
-    private var rowColors: SidebarRowColors {
-        SidebarRowColors()
-    }
-
-    private func expansionBinding(for folder: Folder) -> Binding<Bool> {
-        let path = folder.url.standardizedFileURL.path
-        return Binding(
-            get: { isExpanded(folder) },
-            set: { expanded in
-                if expanded {
-                    expandFolder(at: path)
-                } else {
-                    expandedFolderPaths.remove(path)
-                }
-            }
-        )
-    }
-
-    private func isExpanded(_ folder: Folder) -> Bool {
-        expandedFolderPaths.contains(folder.url.standardizedFileURL.path)
-    }
-
-    private func expandActiveFolder() {
-        guard let path = model.activeFolderURL?.standardizedFileURL.path,
-              model.activeTerminalTab != nil else { return }
-        expandFolder(at: path)
-    }
-
-    private func expandFolder(at path: String) {
-        expandedFolderPaths.insert(path)
-        unreadCollapsedFolderPaths.remove(path)
-    }
-
-    private func recordUnreadTitleActivity(
-        _ activity: UnreadTitleActivityEvent?
-    ) {
-        guard let activity,
-              let tab = model.terminalTab(id: activity.tabID),
-              let path = tab.ownerFolderURL?.standardizedFileURL.path,
-              !expandedFolderPaths.contains(path)
-        else { return }
-        unreadCollapsedFolderPaths.insert(path)
+        var tabs = model.terminalTabs
+        tabs.move(fromOffsets: source, toOffset: destination)
+        model.setTabOrder(tabs.map(\.id))
     }
 
     private func shortcutLabel(for tab: TerminalTabState) -> String? {
-        let tabs = model.tabsInSidebarOrder
-        guard let index = tabs.firstIndex(where: { $0.id == tab.id })
-        else { return nil }
+        guard let index = model.terminalTabs.firstIndex(where: {
+            $0.id == tab.id
+        }) else { return nil }
         if index < 8 { return "⌘\(index + 1)" }
-        if index == tabs.count - 1 { return "⌘9" }
+        if index == model.terminalTabs.count - 1 { return "⌘9" }
         return nil
-    }
-
-    private func sidebarItemID(for url: URL) -> String {
-        "folder:\(url.standardizedFileURL.path)"
-    }
-
-    private func sidebarTabID(_ id: UUID) -> String {
-        "tab:\(id.uuidString)"
-    }
-
-    private func disambiguatingParentPath(
-        for folder: Folder
-    ) -> String? {
-        let name = folder.displayName
-        guard model.folders.filter({
-            $0.displayName == name
-        }).count > 1 else { return nil }
-
-        let parent = folder.url.deletingLastPathComponent().path
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if parent == home { return "~" }
-        if parent.hasPrefix(home + "/") {
-            return "~" + parent.dropFirst(home.count)
-        }
-        return parent
-    }
-}
-
-private struct FolderRow: View {
-    @Environment(AppModel.self) private var model: AppModel
-    let folder: Folder
-    let parentPath: String?
-    let isExpanded: Bool
-    let hasUnreadTitleActivity: Bool
-    let colors: SidebarRowColors
-
-    private var folderPath: String {
-        folder.url.standardizedFileURL.path
-    }
-
-    private var isActive: Bool {
-        model.activeFolderURL?.standardizedFileURL
-            == folder.url.standardizedFileURL
-    }
-
-    private var needsAgentAttention: Bool {
-        model.folderNeedsAgentAttention(folder.url)
-    }
-
-    private var terminalActivityFrame: String? {
-        guard !isExpanded, !isActive, !needsAgentAttention else { return nil }
-        return model.folderRefreshingTitleFrame(folder.url)
-    }
-
-    private var showsUnreadIndicator: Bool {
-        !isExpanded
-            && !isActive
-            && !needsAgentAttention
-            && terminalActivityFrame == nil
-            && hasUnreadTitleActivity
-    }
-
-    private var accessibilityValue: String {
-        if terminalActivityFrame != nil {
-            return "Terminal content is updating"
-        }
-        return showsUnreadIndicator ? "Unread terminal activity" : ""
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isActive ? "folder.fill" : "folder")
-                .foregroundStyle(
-                    isActive ? Color.accentColor : colors.secondary
-                )
-
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 4) {
-                    if let terminalActivityFrame {
-                        Text(terminalActivityFrame)
-                            .font(.caption.weight(.semibold).monospaced())
-                            .foregroundStyle(colors.primary)
-                    }
-
-                    Text(folder.displayName)
-                        .foregroundStyle(colors.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-
-                if let parentPath {
-                    Text(parentPath)
-                        .font(.caption2)
-                        .foregroundStyle(colors.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            Spacer(minLength: 4)
-
-            if needsAgentAttention {
-                SidebarStatusDot(
-                    color: .orange,
-                    label: "Agent needs attention",
-                    identifier: "agent-attention-folder:\(folderPath)"
-                )
-            } else if showsUnreadIndicator {
-                SidebarStatusDot(
-                    color: .accentColor,
-                    label: "Unread terminal activity",
-                    identifier: "unread-title-folder:\(folderPath)"
-                )
-            }
-        }
-        .contentShape(Rectangle())
-        .help(folder.url.path)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Switch to folder \(folder.displayName)")
-        .accessibilityValue(accessibilityValue)
-        .accessibilityIdentifier(
-            "folder-row:\(folderPath)"
-        )
-        .contextMenu {
-            Button("New Tab") {
-                model.openNewTerminal(for: folder.url)
-            }
-
-            Divider()
-
-            Button("Reveal in Finder") {
-                _ = NSWorkspace.shared.open(folder.url)
-            }
-
-            Divider()
-
-            Button("Remove Folder", role: .destructive) {
-                model.requestRemoveFolder(folder.url)
-            }
-        }
     }
 }
 
@@ -639,30 +168,17 @@ private struct SidebarTerminalTabRow: View {
     }
 
     private var title: String {
-        tab.displayTitle(
-            automaticTitle: session.displayTitle(
-                terminalTitle: terminal.title,
-                foregroundProcessName: session.currentProcessName
-            )
+        session.displayTitle(
+            terminalTitle: terminal.title,
+            foregroundProcessName: session.currentProcessName,
+            currentWorkingDirectory: terminal.workingDirectory
         )
     }
 
-    private var needsAgentAttention: Bool {
-        model.tabNeedsAgentAttention(tab.id)
-    }
-
-    private var showsUnreadIndicator: Bool {
+    private var showsUnread: Bool {
         model.activeTerminalTab?.id != tab.id
-            && !needsAgentAttention
-            && !model.tabIsRefreshingTitle(tab.id)
+            && !model.tabHasActiveTitleActivity(tab.id)
             && model.tabHasUnreadTitleActivity(tab.id)
-    }
-
-    private var accessibilityValue: String {
-        if model.activeTerminalTab?.id == tab.id {
-            return "Selected"
-        }
-        return showsUnreadIndicator ? "Unread terminal activity" : ""
     }
 
     var body: some View {
@@ -677,7 +193,6 @@ private struct SidebarTerminalTabRow: View {
             .buttonStyle(.plain)
             .foregroundStyle(colors.secondary)
             .help("Close Tab")
-            .accessibilityLabel("Close tab \(title)")
             .opacity(isHovering ? 1 : 0)
             .allowsHitTesting(isHovering)
 
@@ -689,16 +204,8 @@ private struct SidebarTerminalTabRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
 
-            if needsAgentAttention {
+            if showsUnread {
                 SidebarStatusDot(
-                    color: .orange,
-                    label: "Agent needs attention",
-                    identifier: "agent-attention-tab:\(tab.id.uuidString)"
-                )
-            } else if showsUnreadIndicator {
-                SidebarStatusDot(
-                    color: .accentColor,
-                    label: "Unread terminal activity",
                     identifier: "unread-title-tab:\(tab.id.uuidString)"
                 )
             }
@@ -714,17 +221,15 @@ private struct SidebarTerminalTabRow: View {
         .contentShape(Rectangle())
         .help(title)
         .accessibilityLabel(title)
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(
+            model.activeTerminalTab?.id == tab.id
+                ? "Selected" : (showsUnread ? "Unread terminal activity" : "")
+        )
         .accessibilityIdentifier(accessibilityIdentifier)
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .contextMenu {
-            Button("Rename Tab…") {
-                model.promptRenameTab(tab.id)
-            }
-            Button("Close Tab") {
-                model.requestCloseTab(tab.id)
-            }
+            Button("Close Tab") { model.requestCloseTab(tab.id) }
         }
     }
 }
@@ -747,15 +252,12 @@ private struct WindowConfigurator: NSViewRepresentable {
             guard let window = view?.window else { return }
             window.tabbingMode = .disallowed
             model.closeWindowHandler = { [weak window] in
-                DispatchQueue.main.async { [weak window] in
-                    window?.performClose(nil)
-                }
+                DispatchQueue.main.async { window?.performClose(nil) }
             }
         }
     }
 }
 
 #Preview {
-    ContentView()
-        .environment(AppModel())
+    ContentView().environment(AppModel())
 }

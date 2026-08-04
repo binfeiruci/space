@@ -1,31 +1,8 @@
 import CoreGraphics
 import Foundation
 
-enum FolderAdditionResult: Equatable {
-    case added(URL)
-    case invalid(URL)
-    case duplicate(URL)
-}
-
-struct Folder: Identifiable, Equatable {
-    let url: URL
-
-    var id: String {
-        url.standardizedFileURL.path
-    }
-
-    var displayName: String {
-        let folderURL = url.resolvingSymlinksInPath().standardizedFileURL
-        let homeURL = FileManager.default.homeDirectoryForCurrentUser
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        return folderURL == homeURL ? "~" : url.lastPathComponent
-    }
-}
-
-struct AlertRequest: Identifiable, Equatable {
-    enum Action: Equatable {
-        case removeFolder(URL)
+struct AlertRequest: Identifiable {
+    enum Action {
         case closeTerminal(UUID)
         case closeTab(UUID)
     }
@@ -33,34 +10,8 @@ struct AlertRequest: Identifiable, Equatable {
     let id = UUID()
     let title: String
     let message: String
-    let confirmationTitle: String?
-    let action: Action?
-}
-
-struct TabRenameRequest: Identifiable, Equatable {
-    let id = UUID()
-    let tabID: UUID
-    let initialTitle: String
-    let automaticTitle: String
-}
-
-struct AgentAttentionNotification: Identifiable, Equatable {
-    let id: UUID
-    let title: String
-    let body: String
-    let receivedAt: Date
-
-    init(
-        id: UUID = UUID(),
-        title: String,
-        body: String,
-        receivedAt: Date = Date()
-    ) {
-        self.id = id
-        self.title = title
-        self.body = body
-        self.receivedAt = receivedAt
-    }
+    let confirmationTitle: String
+    let action: Action
 }
 
 enum TerminalSearchAction {
@@ -80,7 +31,7 @@ enum TerminalSplitAxis: Equatable {
     case vertical
 }
 
-enum TerminalSplitDirection: CaseIterable, Equatable {
+enum TerminalSplitDirection: Equatable {
     case left
     case right
     case up
@@ -298,28 +249,14 @@ indirect enum TerminalSplitNode: Equatable {
     }
 }
 
-struct TerminalTabState: Identifiable, Equatable {
+struct TerminalTabState: Identifiable {
     let id: UUID
-    let ownerFolderURL: URL?
     var root: TerminalSplitNode
     var focusedTerminalID: UUID
-    var customTitle: String? = nil
 
     var terminalIDs: [UUID] {
         root.terminalIDs
     }
-
-    func displayTitle(automaticTitle: String) -> String {
-        guard let customTitle,
-              !customTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-                  .isEmpty else { return automaticTitle }
-        return customTitle
-    }
-}
-
-struct ClosedTerminalLocation {
-    let workingDirectoryURL: URL
-    let ownerFolderURL: URL?
 }
 
 @MainActor

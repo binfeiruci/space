@@ -9,9 +9,6 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
 
     func installApplicationHandlers(for model: AppModel) {
         self.model = model
-        model.agentAttentionHandler = { [weak self] terminalID in
-            self?.activateForAgentAttention(terminalID: terminalID)
-        }
         guard applicationShortcutMonitor == nil else { return }
 
         applicationShortcutMonitor = NSEvent.addLocalMonitorForEvents(
@@ -49,13 +46,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
         applicationShortcutMonitor = nil
         terminationCheckTask?.cancel()
         terminationCheckTask = nil
-        model?.persistFolderWorkspace()
         model?.stopTerminalRuntimeMonitoring()
-        model?.agentAttentionHandler = nil
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        model?.clearVisibleAgentAttention()
     }
 
     func applicationShouldHandleReopen(
@@ -66,12 +57,6 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
             model?.ensureTerminalTab()
         }
         return true
-    }
-
-    private func activateForAgentAttention(terminalID: UUID) {
-        guard !NSApp.isActive, let model else { return }
-        model.selectTerminal(terminalID)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminate(
@@ -223,23 +208,10 @@ struct SpaceApp: App {
     private static func makeAppModel() -> AppModel {
         #if DEBUG
         let environment = ProcessInfo.processInfo.environment
-        if let pathsValue = environment["SPACE_UI_TEST_FOLDER_PATHS"] {
-            let paths = pathsValue.split(separator: "\n").map(String.init)
-            let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"]
-                ?? "SpaceUITests"
+        if let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"] {
             let defaults = UserDefaults(suiteName: suiteName) ?? .standard
             defaults.removePersistentDomain(forName: suiteName)
-            let model = AppModel(
-                defaults: defaults,
-                initialFolderURL: paths.first.map(URL.init(fileURLWithPath:))
-            )
-            for path in paths.dropFirst() {
-                model.addFolder(
-                    URL(fileURLWithPath: path),
-                    activate: false
-                )
-            }
-            return model
+            return AppModel(defaults: defaults)
         }
         #endif
         return AppModel()
@@ -262,6 +234,8 @@ struct SpaceApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
+            ApplicationSettingsCommands(settings: model.settings)
+
             CommandGroup(replacing: .appTermination) {
                 Button("Quit Space") {
                     NSApp.terminate(nil)
@@ -271,37 +245,9 @@ struct SpaceApp: App {
 
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") {
-                    model.openNewTerminalInActiveContext()
+                    model.openNewTerminal()
                 }
                 .keyboardShortcut("t", modifiers: .command)
-
-                Button("New Standalone Tab") {
-                    model.openNewStandaloneTerminal()
-                }
-
-                Button("Add Folder…") {
-                    model.chooseFolder()
-                }
-                .keyboardShortcut("o", modifiers: .command)
-
-                Menu("Open Recent") {
-                    if model.recentFolders.isEmpty {
-                        Button("No Recent Folders") {}
-                            .disabled(true)
-                    } else {
-                        ForEach(model.recentFolders) { folder in
-                            Button(folder.displayName) {
-                                model.activateFolder(folder.url)
-                            }
-                        }
-
-                        Divider()
-
-                        Button("Clear Menu") {
-                            model.clearRecentFolders()
-                        }
-                    }
-                }
 
                 Divider()
 
@@ -334,12 +280,6 @@ struct SpaceApp: App {
                 }
                 .keyboardShortcut("w", modifiers: .command)
                 .disabled(model.activeTerminalSession == nil)
-
-                Button("Reopen Closed Terminal") {
-                    model.restoreLastClosedTerminal()
-                }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(!model.canRestoreClosedTerminal)
             }
 
             CommandGroup(replacing: .saveItem) { }
@@ -371,82 +311,78 @@ struct SpaceApp: App {
                     model.toggleSidebar()
                 }
                 .keyboardShortcut("s", modifiers: [.command, .option])
-                .disabled(model.folders.isEmpty && model.terminalTabs.isEmpty)
-
-                Divider()
-
-                Button("Rename Tab…") {
-                    guard let tabID = model.activeTerminalTab?.id else {
-                        return
-                    }
-                    model.promptRenameTab(tabID)
-                }
-                .disabled(model.activeTerminalTab == nil)
+                .disabled(model.terminalTabs.isEmpty)
             }
 
             CommandGroup(before: .windowArrangement) {
-                Button("Previous Tab Group") {
-                    model.selectAdjacentTabGroup(offset: -1)
-                }
-                .keyboardShortcut(
-                    .leftArrow,
-                    modifiers: [.command, .shift]
-                )
-                .disabled(model.tabGroupCount < 2)
-
-                Button("Next Tab Group") {
-                    model.selectAdjacentTabGroup(offset: 1)
-                }
-                .keyboardShortcut(
-                    .rightArrow,
-                    modifiers: [.command, .shift]
-                )
-                .disabled(model.tabGroupCount < 2)
-
-                Divider()
-
                 Button("Previous Tab") {
-                    model.selectAdjacentTab(offset: -1)
+                    _ = model.selectAdjacentTab(offset: -1)
                 }
                 .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(model.tabsInSidebarOrder.count < 2)
+                .disabled(model.terminalTabs.count < 2)
 
                 Button("Next Tab") {
-                    model.selectAdjacentTab(offset: 1)
+                    _ = model.selectAdjacentTab(offset: 1)
                 }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(model.tabsInSidebarOrder.count < 2)
+                .disabled(model.terminalTabs.count < 2)
 
                 Divider()
 
                 Button("Select Split Left") {
-                    model.selectSplit(in: .left)
+                    _ = model.selectSplit(in: .left)
                 }
                 .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
                 .disabled(!model.canSelectSplit(in: .left))
 
                 Button("Select Split Right") {
-                    model.selectSplit(in: .right)
+                    _ = model.selectSplit(in: .right)
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
                 .disabled(!model.canSelectSplit(in: .right))
 
                 Button("Select Split Above") {
-                    model.selectSplit(in: .up)
+                    _ = model.selectSplit(in: .up)
                 }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
                 .disabled(!model.canSelectSplit(in: .up))
 
                 Button("Select Split Below") {
-                    model.selectSplit(in: .down)
+                    _ = model.selectSplit(in: .down)
                 }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(!model.canSelectSplit(in: .down))
             }
         }
+    }
+}
 
-        Settings {
-            SettingsView(settings: model.settings)
+private struct ApplicationSettingsCommands: Commands {
+    @ObservedObject var settings: AppSettings
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Menu("Appearance") {
+                ForEach(AppearancePreference.allCases) { appearance in
+                    Button {
+                        settings.appearance = appearance
+                    } label: {
+                        if settings.appearance == appearance {
+                            Label(appearance.title, systemImage: "checkmark")
+                        } else {
+                            Text(appearance.title)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("Settings…") {
+                GhosttyConfigurationFile.system.open()
+            }
+            .keyboardShortcut(",", modifiers: .command)
+            .disabled(!GhosttyConfigurationFile.system.isAvailable)
         }
     }
 }

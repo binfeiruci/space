@@ -35,6 +35,8 @@ public final class TerminalController {
 
     public enum ConfigSource: Sendable, Hashable {
         case none
+        case defaultFiles
+        case defaultFilesWithOverrides(String)
         case file(String)
         case generated(String)
     }
@@ -273,7 +275,13 @@ public final class TerminalController {
             configuration: nextTerminalConfiguration,
             theme: themeConfig
         )
-        return (.generated(contents), contents)
+        let source: ConfigSource = switch baseConfigSource {
+        case .defaultFiles, .defaultFilesWithOverrides:
+            .defaultFilesWithOverrides(contents)
+        case .none, .file, .generated:
+            .generated(contents)
+        }
+        return (source, contents)
     }
 
     // MARK: - Tick

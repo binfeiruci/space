@@ -7,6 +7,17 @@ import Foundation
 import GhosttyKit
 
 extension TerminalController {
+    public static var defaultConfigURL: URL? {
+        let value = ghostty_config_open_path()
+        defer { ghostty_string_free(value) }
+        guard let pointer = value.ptr, value.len > 0 else { return nil }
+        let bytes = UnsafeRawBufferPointer(
+            start: pointer,
+            count: Int(value.len)
+        )
+        return URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self))
+    }
+
     @discardableResult
     public func updateConfigSource(_ source: ConfigSource) -> Bool {
         guard source != configSource else { return true }
@@ -116,13 +127,32 @@ extension TerminalController {
         source: ConfigSource
     ) -> Result<PreparedConfig, ConfigurationIssue> {
         let resolvedContents: String
-        let configPath: String
+        let configPath: String?
         let managedConfigURL: URL?
+        let loadDefaultFiles: Bool
 
         switch source {
         case .none:
             resolvedContents = defaultRenderedConfig
+            loadDefaultFiles = false
             switch writeManagedConfig(contents: resolvedContents) {
+            case let .success(url):
+                managedConfigURL = url
+                configPath = url.path
+            case let .failure(issue):
+                return .failure(issue)
+            }
+
+        case .defaultFiles:
+            resolvedContents = ""
+            configPath = nil
+            managedConfigURL = nil
+            loadDefaultFiles = true
+
+        case let .defaultFilesWithOverrides(contents):
+            resolvedContents = contents
+            loadDefaultFiles = true
+            switch writeManagedConfig(contents: contents) {
             case let .success(url):
                 managedConfigURL = url
                 configPath = url.path
@@ -132,6 +162,7 @@ extension TerminalController {
 
         case let .generated(contents):
             resolvedContents = contents
+            loadDefaultFiles = false
             switch writeManagedConfig(contents: contents) {
             case let .success(url):
                 managedConfigURL = url
@@ -141,6 +172,7 @@ extension TerminalController {
             }
 
         case let .file(path):
+            loadDefaultFiles = false
             do {
                 resolvedContents = try String(contentsOfFile: path, encoding: .utf8)
             } catch {
@@ -157,7 +189,15 @@ extension TerminalController {
             return .failure(ConfigurationIssue("ghostty_config_new returned nil"))
         }
 
-        ghostty_config_load_file(rawValue, configPath)
+        if loadDefaultFiles {
+            ghostty_config_load_default_files(rawValue)
+            ghostty_config_load_recursive_files(rawValue)
+        }
+
+        if let configPath {
+            ghostty_config_load_file(rawValue, configPath)
+            ghostty_config_load_recursive_files(rawValue)
+        }
         ghostty_config_finalize(rawValue)
 
         let diagnostics = configDiagnostics(from: rawValue)
