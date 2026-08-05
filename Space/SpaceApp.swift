@@ -46,6 +46,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
         applicationShortcutMonitor = nil
         terminationCheckTask?.cancel()
         terminationCheckTask = nil
+        model?.saveWorkspace()
         model?.stopTerminalRuntimeMonitoring()
     }
 

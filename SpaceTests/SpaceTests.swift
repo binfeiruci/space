@@ -234,14 +234,35 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func sessionStructureIsNotRestoredAcrossLaunches() throws {
+    func tabsDirectoriesSelectionAndDividersRestoreAcrossLaunches() throws {
         let defaults = isolatedDefaults()
         let first = AppModel(defaults: defaults)
+        let firstTabID = try #require(first.activeTabID)
+        let firstSession = try #require(first.activeTerminalSession)
         first.openNewTerminal()
+        let secondSession = try #require(first.activeTerminalSession)
+        first.addTabDivider(after: firstTabID)
+        first.selectTab(firstTabID)
+        firstSession.terminal.terminalDidChangeWorkingDirectory("/tmp")
+        secondSession.terminal.terminalDidChangeWorkingDirectory("/")
+        let delegate = SpaceAppDelegate()
+        delegate.model = first
+        delegate.applicationWillTerminate(
+            Notification(name: NSApplication.willTerminateNotification)
+        )
         #expect(first.terminalTabs.count == 2)
 
         let relaunched = AppModel(defaults: defaults)
-        #expect(relaunched.terminalTabs.count == 1)
+        #expect(relaunched.terminalTabs.count == 2)
+        #expect(relaunched.tabSidebarItems.count == 3)
+        #expect(relaunched.tabSidebarItems[0].tabID != nil)
+        #expect(relaunched.tabSidebarItems[1].dividerID != nil)
+        #expect(relaunched.tabSidebarItems[2].tabID != nil)
+        #expect(relaunched.activeTabID == relaunched.terminalTabs[0].id)
+        #expect(relaunched.terminalSessions[0].workingDirectoryURL
+            == URL(fileURLWithPath: "/tmp").standardizedFileURL)
+        #expect(relaunched.terminalSessions[1].workingDirectoryURL
+            == URL(fileURLWithPath: "/").standardizedFileURL)
     }
 
     @Test @MainActor

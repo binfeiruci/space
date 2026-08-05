@@ -45,6 +45,7 @@ final class AppModel {
     var closeWindowHandler: (() -> Void)?
 
     private let processInspector: any TerminalProcessInspecting
+    private let workspaceStore: TerminalWorkspaceStore
     private var workspaceIndex = TerminalWorkspaceIndex()
     private var terminalRuntimeMonitorTask: Task<Void, Never>?
     private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
@@ -54,15 +55,19 @@ final class AppModel {
         processInspector: (any TerminalProcessInspecting)? = nil
     ) {
         self.processInspector = processInspector ?? TerminalProcessInspector()
+        workspaceStore = TerminalWorkspaceStore(defaults: defaults)
         settings = AppSettings(defaults: defaults)
         terminalSessions = []
         terminalTabs = []
         activeTabID = nil
 
-        let session = appendTerminalTab(
-            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
-        )
-        activeTabID = session.id
+        if !restoreWorkspace() {
+            let session = appendTerminalTab(
+                workingDirectoryURL: FileManager.default
+                    .homeDirectoryForCurrentUser
+            )
+            activeTabID = session.id
+        }
         workspaceIndex.indexSessions(terminalSessions)
         workspaceIndex.indexTabs(terminalTabs)
     }
@@ -99,6 +104,10 @@ final class AppModel {
     func stopTerminalRuntimeMonitoring() {
         terminalRuntimeMonitorTask?.cancel()
         terminalRuntimeMonitorTask = nil
+    }
+
+    func saveWorkspace() {
+        persistWorkspace()
     }
 
     func refreshTerminalProcessNames() async {
@@ -507,6 +516,78 @@ final class AppModel {
     private func stopTrackingTerminalTitle(for terminalID: UUID) {
         terminalTitleCancellables.removeValue(forKey: terminalID)
         activeTitleTerminalIDs.remove(terminalID)
+    }
+
+    private func restoreWorkspace() -> Bool {
+        guard let workspace = workspaceStore.load(),
+              workspace.items.contains(where: { $0.kind == .tab })
+        else { return false }
+
+        var restoredActiveTabID: UUID?
+        for item in workspace.items {
+            switch item.kind {
+            case .divider:
+                tabSidebarItems.append(.divider(UUID()))
+            case .tab:
+                let session = appendTerminalTab(
+                    workingDirectoryURL: restoredWorkingDirectoryURL(
+                        path: item.workingDirectoryPath
+                    )
+                )
+                if item.isActive { restoredActiveTabID = session.id }
+            }
+        }
+        activeTabID = restoredActiveTabID ?? terminalTabs[0].id
+        return true
+    }
+
+    private func persistWorkspace() {
+        let items = tabSidebarItems.compactMap { item
+            -> TerminalWorkspaceStore.Snapshot.SidebarItem? in
+            switch item {
+            case .divider:
+                return .divider
+            case let .tab(id):
+                guard let tab = terminalTab(id: id),
+                      let session = terminalSession(
+                        id: tab.focusedTerminalID
+                      )
+                else { return nil }
+                return .tab(
+                    workingDirectoryPath: currentWorkingDirectoryURL(
+                        for: session
+                    ).path,
+                    isActive: id == activeTabID
+                )
+            }
+        }
+        workspaceStore.save(.init(items: items))
+    }
+
+    private func currentWorkingDirectoryURL(
+        for session: TerminalSession
+    ) -> URL {
+        let value = session.terminal.workingDirectory?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty else {
+            return session.workingDirectoryURL
+        }
+        if let fileURL = URL(string: value), fileURL.isFileURL {
+            return fileURL.standardizedFileURL
+        }
+        return URL(fileURLWithPath: value).standardizedFileURL
+    }
+
+    private func restoredWorkingDirectoryURL(path: String?) -> URL {
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+        guard let path, !path.isEmpty else { return homeURL }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: url.path,
+            isDirectory: &isDirectory
+        ), isDirectory.boolValue else { return homeURL }
+        return url
     }
 
     private func splitNavigationTarget(
