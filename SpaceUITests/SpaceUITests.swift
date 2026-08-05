@@ -59,6 +59,26 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testDuplicateTabCreatesAnotherTab() throws {
+        let app = launchIsolatedApp()
+        defer { app.terminate() }
+
+        let rows = terminalTabRows(in: app)
+        let firstRow = rows.firstMatch
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
+        firstRow.rightClick()
+        let duplicateTabMenuItem = app.menuItems["Duplicate Tab"]
+        XCTAssertTrue(duplicateTabMenuItem.waitForExistence(timeout: 3))
+        duplicateTabMenuItem.click()
+
+        expectation(
+            for: NSPredicate { _, _ in rows.count == 2 },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
     func testTabDividerCanBeAddedAndRemoved() throws {
         let app = launchIsolatedApp()
         defer { app.terminate() }

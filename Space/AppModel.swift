@@ -148,6 +148,20 @@ final class AppModel {
         activeTabID = session.id
     }
 
+    func duplicateTab(_ id: UUID) {
+        guard let tabIndex = terminalTabs.firstIndex(where: { $0.id == id }),
+              let sidebarIndex = sidebarTabIndex(id: id),
+              let tab = terminalTab(id: id),
+              let session = terminalSession(id: tab.focusedTerminalID)
+        else { return }
+        let duplicate = insertTerminalTab(
+            at: tabIndex + 1,
+            sidebarIndex: sidebarIndex + 1,
+            workingDirectoryURL: session.currentWorkingDirectoryURL
+        )
+        activeTabID = duplicate.id
+    }
+
     func ensureTerminalTab() {
         guard terminalTabs.isEmpty else { return }
         openNewTerminal()

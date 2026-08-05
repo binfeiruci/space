@@ -239,6 +239,10 @@ private struct SidebarTerminalTabRow: View {
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .contextMenu {
+            Button("Duplicate Tab") {
+                model.duplicateTab(tab.id)
+            }
+
             Button("New Tab Below") {
                 model.openNewTerminal(after: tab.id)
             }

@@ -324,6 +324,35 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func duplicatedTabUsesCurrentDirectoryAndIsInsertedBelowSource() throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTabID)
+        let firstSession = try #require(model.activeTerminalSession)
+        firstSession.updateProcessState(.init(
+            name: firstSession.defaultShellName,
+            workingDirectory: "/tmp"
+        ))
+        model.openNewTerminal()
+        let secondID = try #require(model.activeTabID)
+        model.addTabDivider(after: firstID)
+        let dividerID = try #require(model.tabSidebarItems[1].dividerID)
+
+        model.duplicateTab(firstID)
+
+        let duplicateID = try #require(model.activeTabID)
+        #expect(model.terminalTabs.map(\.id) == [
+            firstID, duplicateID, secondID,
+        ])
+        #expect(model.tabSidebarItems == [
+            .tab(firstID),
+            .tab(duplicateID),
+            .divider(dividerID),
+            .tab(secondID),
+        ])
+        #expect(model.activeTerminalSession?.workingDirectoryURL.path == "/tmp")
+    }
+
+    @Test @MainActor
     func tabDividerIsAnIndependentReorderableSidebarItem() throws {
         let model = AppModel(defaults: isolatedDefaults())
         let firstID = try #require(model.activeTabID)
