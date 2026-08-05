@@ -1,10 +1,15 @@
 import Darwin
 import Foundation
 
+struct TerminalProcessState: Sendable, Equatable {
+    let name: String
+    let workingDirectory: String?
+}
+
 protocol TerminalProcessInspecting: Sendable {
-    func processNames(
+    func processStates(
         for requests: [TerminalProcessInspector.Request]
-    ) async -> [UUID: String]
+    ) async -> [UUID: TerminalProcessState]
 }
 
 enum TerminalRuntimeMonitoringPolicy {
@@ -60,7 +65,9 @@ actor TerminalProcessInspector: TerminalProcessInspecting {
         let terminalForegroundProcessGroupID: pid_t
     }
 
-    func processNames(for requests: [Request]) -> [UUID: String] {
+    func processStates(
+        for requests: [Request]
+    ) -> [UUID: TerminalProcessState] {
         guard !requests.isEmpty else { return [:] }
 
         let identities = processIdentitySnapshots()
@@ -68,7 +75,7 @@ actor TerminalProcessInspector: TerminalProcessInspecting {
             $0.parentProcessID
         }
         var processNameByID: [pid_t: String] = [:]
-        var namesBySessionID: [UUID: String] = [:]
+        var statesBySessionID: [UUID: TerminalProcessState] = [:]
 
         for request in requests {
             guard let process = foregroundProcess(
@@ -77,9 +84,12 @@ actor TerminalProcessInspector: TerminalProcessInspecting {
                 childrenByParent: childrenByParent,
                 processNameByID: &processNameByID
             ) else { continue }
-            namesBySessionID[request.sessionID] = process.name
+            statesBySessionID[request.sessionID] = TerminalProcessState(
+                name: process.name,
+                workingDirectory: workingDirectory(for: process.processID)
+            )
         }
-        return namesBySessionID
+        return statesBySessionID
     }
 
     private func foregroundProcess(
@@ -352,5 +362,25 @@ actor TerminalProcessInspector: TerminalProcessInspecting {
         )
         guard nameLength > 0 else { return nil }
         return String(cString: nameBuffer)
+    }
+
+    private func workingDirectory(for processID: pid_t) -> String? {
+        var info = proc_vnodepathinfo()
+        let infoSize = MemoryLayout<proc_vnodepathinfo>.stride
+        guard proc_pidinfo(
+            processID,
+            PROC_PIDVNODEPATHINFO,
+            0,
+            &info,
+            Int32(infoSize)
+        ) == Int32(infoSize) else { return nil }
+
+        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) { pointer in
+            pointer.withMemoryRebound(
+                to: CChar.self,
+                capacity: Int(MAXPATHLEN)
+            ) { String(cString: $0) }
+        }
+        return path.isEmpty ? nil : path
     }
 }

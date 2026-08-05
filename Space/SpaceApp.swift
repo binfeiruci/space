@@ -100,7 +100,7 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
 
 enum ApplicationTerminationCheck {
     static func prompt(for model: AppModel) async -> ApplicationTerminationPrompt {
-        await model.refreshTerminalProcessNames()
+        await model.refreshTerminalProcessStates()
         return ApplicationTerminationPrompt(
             runningProgramNames: model.terminalSessions.compactMap(
                 \.runningForegroundProcessName

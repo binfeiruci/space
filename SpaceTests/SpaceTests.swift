@@ -5,18 +5,18 @@ import Testing
 @testable import Space
 
 private actor StubProcessInspector: TerminalProcessInspecting {
-    private var namesBySessionID: [UUID: String] = [:]
+    private var statesBySessionID: [UUID: TerminalProcessState] = [:]
     private var requestCount = 0
 
-    func processNames(
+    func processStates(
         for requests: [TerminalProcessInspector.Request]
-    ) -> [UUID: String] {
+    ) -> [UUID: TerminalProcessState] {
         requestCount += 1
-        return namesBySessionID
+        return statesBySessionID
     }
 
-    func setNames(_ names: [UUID: String]) {
-        namesBySessionID = names
+    func setStates(_ states: [UUID: TerminalProcessState]) {
+        statesBySessionID = states
     }
 
     func requestsReceived() -> Int { requestCount }
@@ -93,22 +93,21 @@ struct SpaceTests {
             defaultShellPath: "/bin/zsh"
         )
 
-        #expect(session.displayTitle(
-            terminalTitle: "/tmp/current/project",
-            foregroundProcessName: "zsh",
-            currentWorkingDirectory: "/tmp/current/project"
-        ) == "project")
-        #expect(session.displayTitle(
-            terminalTitle: "/",
-            foregroundProcessName: "zsh",
-            currentWorkingDirectory: "/"
-        ) == "/")
-        #expect(session.displayTitle(
-            terminalTitle: "~",
-            foregroundProcessName: "zsh",
-            currentWorkingDirectory: FileManager.default
-                .homeDirectoryForCurrentUser.path
-        ) == "~")
+        session.updateProcessState(.init(
+            name: "zsh",
+            workingDirectory: "/tmp/current/project"
+        ))
+        #expect(session.displayTitle() == "project")
+
+        session.updateProcessState(.init(name: "zsh", workingDirectory: "/"))
+        #expect(session.displayTitle() == "/")
+
+        let homePath = FileManager.default.homeDirectoryForCurrentUser.path
+        session.updateProcessState(.init(
+            name: "zsh",
+            workingDirectory: homePath
+        ))
+        #expect(session.displayTitle() == "~")
     }
 
     @Test @MainActor
@@ -118,22 +117,19 @@ struct SpaceTests {
             defaultShellPath: "/bin/zsh"
         )
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
+        session.updateProcessState(.init(name: "vim", workingDirectory: nil))
 
         #expect(session.displayTitle(
-            terminalTitle: "file:///tmp/project",
-            foregroundProcessName: "vim"
+            terminalTitle: "file:///tmp/project"
         ) == "file:///tmp/project")
         #expect(session.displayTitle(
-            terminalTitle: homeURL.path,
-            foregroundProcessName: "vim"
+            terminalTitle: homeURL.path
         ) == "vim")
         #expect(session.displayTitle(
-            terminalTitle: homeURL.absoluteString,
-            foregroundProcessName: "vim"
+            terminalTitle: homeURL.absoluteString
         ) == homeURL.absoluteString)
         #expect(session.displayTitle(
-            terminalTitle: "Editing README.md",
-            foregroundProcessName: "vim"
+            terminalTitle: "Editing README.md"
         ) == "Editing README.md")
     }
 
@@ -476,18 +472,24 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func refreshingProcessNamesUsesInjectedInspector() async throws {
+    func refreshingProcessStateUpdatesSession() async throws {
         let inspector = StubProcessInspector()
         let model = AppModel(
             defaults: isolatedDefaults(),
             processInspector: inspector
         )
         let session = try #require(model.activeTerminalSession)
-        await inspector.setNames([session.id: "vim"])
+        await inspector.setStates([
+            session.id: TerminalProcessState(
+                name: "vim",
+                workingDirectory: "/tmp/project"
+            ),
+        ])
 
-        await model.refreshTerminalProcessNames()
+        await model.refreshTerminalProcessStates()
 
         #expect(session.currentProcessName == "vim")
+        #expect(session.currentWorkingDirectoryURL.path == "/tmp/project")
         #expect(await inspector.requestsReceived() == 1)
     }
 

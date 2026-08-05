@@ -16,6 +16,7 @@ final class TerminalSession: ObservableObject, Identifiable {
     @Published private(set) var terminalFocusRequest = 0
     @Published private(set) var searchFocusRequest = 0
     @Published private(set) var currentProcessName: String?
+    @Published private var processWorkingDirectory: String?
 
     init(
         workingDirectoryURL: URL,
@@ -51,9 +52,22 @@ final class TerminalSession: ObservableObject, Identifiable {
         )
     }
 
-    func updateCurrentProcessName(_ name: String?) {
-        guard currentProcessName != name else { return }
-        currentProcessName = name
+    func updateProcessState(_ state: TerminalProcessState?) {
+        let name = state?.name
+        if currentProcessName != name {
+            currentProcessName = name
+        }
+
+        if let workingDirectory = nonEmpty(state?.workingDirectory),
+           processWorkingDirectory != workingDirectory {
+            processWorkingDirectory = workingDirectory
+        }
+    }
+
+    var currentWorkingDirectoryURL: URL {
+        directoryURL(from: processWorkingDirectory)
+            ?? directoryURL(from: terminal.workingDirectory)
+            ?? workingDirectoryURL
     }
 
     var runningForegroundProcessName: String? {
@@ -91,16 +105,10 @@ final class TerminalSession: ObservableObject, Identifiable {
         isSearchPresented = false
     }
 
-    func displayTitle(
-        terminalTitle: String,
-        foregroundProcessName: String?,
-        currentWorkingDirectory: String? = nil
-    ) -> String {
-        let processName = foregroundProcessName.flatMap(Self.processName(from:))
+    func displayTitle(terminalTitle: String = "") -> String {
+        let processName = currentProcessName.flatMap(Self.processName(from:))
         if processName == defaultShellName {
-            return directoryName(
-                currentWorkingDirectory: currentWorkingDirectory
-            )
+            return directoryName
         }
 
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -108,30 +116,30 @@ final class TerminalSession: ObservableObject, Identifiable {
            !Self.isHomeDirectory(URL(fileURLWithPath: title)) {
             return title
         }
-        return processName ?? directoryName(
-            currentWorkingDirectory: currentWorkingDirectory
-        )
+        return processName ?? directoryName
     }
 
-    private func directoryName(currentWorkingDirectory: String?) -> String {
-        let value = currentWorkingDirectory?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let currentURL: URL? = if let value, !value.isEmpty {
-            if let fileURL = URL(string: value), fileURL.isFileURL {
-                fileURL
-            } else {
-                URL(fileURLWithPath: value)
-            }
-        } else {
-            nil
-        }
-        let url = (currentURL ?? workingDirectoryURL).standardizedFileURL
+    private var directoryName: String {
+        let url = currentWorkingDirectoryURL
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .standardizedFileURL.path
         if url.path == homePath {
             return "~"
         }
         return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    }
+
+    private func directoryURL(from value: String?) -> URL? {
+        guard let value = nonEmpty(value) else { return nil }
+        if let fileURL = URL(string: value), fileURL.isFileURL {
+            return fileURL.standardizedFileURL
+        }
+        return URL(fileURLWithPath: value).standardizedFileURL
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        let value = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
     }
 
     private static func isHomeDirectory(_ url: URL) -> Bool {

@@ -110,12 +110,14 @@ final class AppModel {
         persistWorkspace()
     }
 
-    func refreshTerminalProcessNames() async {
+    func refreshTerminalProcessStates() async {
         let requests = terminalSessions.compactMap(\.processInspectionRequest)
-        let namesBySessionID = await processInspector.processNames(for: requests)
+        let statesBySessionID = await processInspector.processStates(
+            for: requests
+        )
         guard !Task.isCancelled else { return }
         for session in terminalSessions {
-            session.updateCurrentProcessName(namesBySessionID[session.id])
+            session.updateProcessState(statesBySessionID[session.id])
         }
     }
 
@@ -439,7 +441,7 @@ final class AppModel {
             where !displayedTerminalIDs.contains(session.id) {
                 session.terminal.controller.tick()
             }
-            await refreshTerminalProcessNames()
+            await refreshTerminalProcessStates()
             guard !Task.isCancelled else { return }
             do {
                 try await Task.sleep(for: TerminalRuntimeMonitoringPolicy.interval(
@@ -554,28 +556,13 @@ final class AppModel {
                       )
                 else { return nil }
                 return .tab(
-                    workingDirectoryPath: currentWorkingDirectoryURL(
-                        for: session
-                    ).path,
+                    workingDirectoryPath: session.currentWorkingDirectoryURL
+                        .path,
                     isActive: id == activeTabID
                 )
             }
         }
         workspaceStore.save(.init(items: items))
-    }
-
-    private func currentWorkingDirectoryURL(
-        for session: TerminalSession
-    ) -> URL {
-        let value = session.terminal.workingDirectory?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let value, !value.isEmpty else {
-            return session.workingDirectoryURL
-        }
-        if let fileURL = URL(string: value), fileURL.isFileURL {
-            return fileURL.standardizedFileURL
-        }
-        return URL(fileURLWithPath: value).standardizedFileURL
     }
 
     private func restoredWorkingDirectoryURL(path: String?) -> URL {

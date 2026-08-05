@@ -182,11 +182,7 @@ private struct SidebarTerminalTabRow: View {
     }
 
     private var title: String {
-        session.displayTitle(
-            terminalTitle: terminal.title,
-            foregroundProcessName: session.currentProcessName,
-            currentWorkingDirectory: terminal.workingDirectory
-        )
+        session.displayTitle(terminalTitle: terminal.title)
     }
 
     private var showsUnread: Bool {
