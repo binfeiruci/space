@@ -112,16 +112,29 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func nonShellTitleKeepsPath() {
+    func terminalTitleOnlyIgnoresHomeDirectoryPath() {
         let session = TerminalSession(
             workingDirectoryURL: URL(fileURLWithPath: "/tmp"),
             defaultShellPath: "/bin/zsh"
         )
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
 
         #expect(session.displayTitle(
             terminalTitle: "file:///tmp/project",
             foregroundProcessName: "vim"
         ) == "file:///tmp/project")
+        #expect(session.displayTitle(
+            terminalTitle: homeURL.path,
+            foregroundProcessName: "vim"
+        ) == "vim")
+        #expect(session.displayTitle(
+            terminalTitle: homeURL.absoluteString,
+            foregroundProcessName: "vim"
+        ) == homeURL.absoluteString)
+        #expect(session.displayTitle(
+            terminalTitle: "Editing README.md",
+            foregroundProcessName: "vim"
+        ) == "Editing README.md")
     }
 
     @Test @MainActor

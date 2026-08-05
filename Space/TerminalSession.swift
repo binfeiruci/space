@@ -104,8 +104,13 @@ final class TerminalSession: ObservableObject, Identifiable {
         }
 
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty { return title }
-        return processName ?? defaultShellName
+        if !title.isEmpty,
+           !Self.isHomeDirectory(URL(fileURLWithPath: title)) {
+            return title
+        }
+        return processName ?? directoryName(
+            currentWorkingDirectory: currentWorkingDirectory
+        )
     }
 
     private func directoryName(currentWorkingDirectory: String?) -> String {
@@ -127,6 +132,12 @@ final class TerminalSession: ObservableObject, Identifiable {
             return "~"
         }
         return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    }
+
+    private static func isHomeDirectory(_ url: URL) -> Bool {
+        return url.standardizedFileURL.path
+            == FileManager.default.homeDirectoryForCurrentUser
+                .standardizedFileURL.path
     }
 
     private static var loginShellPath: String {
