@@ -243,11 +243,17 @@ private struct SidebarTerminalTabRow: View {
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .contextMenu {
-            Button("Close Tab") { model.requestCloseTab(tab.id) }
+            Button("New Tab Below") {
+                model.openNewTerminal(after: tab.id)
+            }
 
-            Button("Add Divider Below") {
+            Button("New Divider Below") {
                 model.addTabDivider(after: tab.id)
             }
+
+            Divider()
+
+            Button("Close Tab") { model.requestCloseTab(tab.id) }
         }
     }
 }

@@ -39,6 +39,26 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testNewTabBelowCreatesAnotherTab() throws {
+        let app = launchIsolatedApp()
+        defer { app.terminate() }
+
+        let rows = terminalTabRows(in: app)
+        let firstRow = rows.firstMatch
+        XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
+        firstRow.rightClick()
+        let newTabBelowMenuItem = app.menuItems["New Tab Below"]
+        XCTAssertTrue(newTabBelowMenuItem.waitForExistence(timeout: 3))
+        newTabBelowMenuItem.click()
+
+        expectation(
+            for: NSPredicate { _, _ in rows.count == 2 },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 3)
+    }
+
+    @MainActor
     func testTabDividerCanBeAddedAndRemoved() throws {
         let app = launchIsolatedApp()
         defer { app.terminate() }
@@ -59,15 +79,15 @@ final class SpaceUITests: XCTestCase {
             )
         )
         rows.firstMatch.rightClick()
-        let addDivider = app.menuItems["Add Divider Below"]
-        XCTAssertTrue(addDivider.waitForExistence(timeout: 3))
-        addDivider.click()
+        let newDividerMenuItem = app.menuItems["New Divider Below"]
+        XCTAssertTrue(newDividerMenuItem.waitForExistence(timeout: 3))
+        newDividerMenuItem.click()
         let divider = dividers.firstMatch
         XCTAssertTrue(divider.waitForExistence(timeout: 3))
 
         rows.firstMatch.rightClick()
-        XCTAssertTrue(addDivider.waitForExistence(timeout: 3))
-        XCTAssertTrue(addDivider.isEnabled)
+        XCTAssertTrue(newDividerMenuItem.waitForExistence(timeout: 3))
+        XCTAssertTrue(newDividerMenuItem.isEnabled)
         app.typeKey(.escape, modifierFlags: [])
 
         divider.rightClick()

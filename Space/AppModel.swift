@@ -125,6 +125,18 @@ final class AppModel {
         activeTabID = session.id
     }
 
+    func openNewTerminal(after id: UUID) {
+        guard let tabIndex = terminalTabs.firstIndex(where: { $0.id == id }),
+              let sidebarIndex = sidebarTabIndex(id: id)
+        else { return }
+        let session = insertTerminalTab(
+            at: tabIndex + 1,
+            sidebarIndex: sidebarIndex + 1,
+            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
+        )
+        activeTabID = session.id
+    }
+
     func ensureTerminalTab() {
         guard terminalTabs.isEmpty else { return }
         openNewTerminal()
@@ -370,17 +382,29 @@ final class AppModel {
     private func appendTerminalTab(
         workingDirectoryURL: URL
     ) -> TerminalSession {
+        insertTerminalTab(
+            at: terminalTabs.endIndex,
+            sidebarIndex: tabSidebarItems.endIndex,
+            workingDirectoryURL: workingDirectoryURL
+        )
+    }
+
+    private func insertTerminalTab(
+        at tabIndex: Int,
+        sidebarIndex: Int,
+        workingDirectoryURL: URL
+    ) -> TerminalSession {
         let session = TerminalSession(
             workingDirectoryURL: workingDirectoryURL
         )
         bindCloseHandler(to: session)
         terminalSessions.append(session)
-        terminalTabs.append(TerminalTabState(
+        terminalTabs.insert(TerminalTabState(
             id: session.id,
             root: .pane(session.id),
             focusedTerminalID: session.id
-        ))
-        tabSidebarItems.append(.tab(session.id))
+        ), at: tabIndex)
+        tabSidebarItems.insert(.tab(session.id), at: sidebarIndex)
         return session
     }
 
