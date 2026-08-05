@@ -22,13 +22,26 @@ private actor StubProcessInspector: TerminalProcessInspecting {
     func requestsReceived() -> Int { requestCount }
 }
 
+private final class TestDefaults: PreferencesStoring {
+    private var values: [String: Any] = [:]
+
+    func data(forKey defaultName: String) -> Data? {
+        values[defaultName] as? Data
+    }
+
+    func string(forKey defaultName: String) -> String? {
+        values[defaultName] as? String
+    }
+
+    func set(_ value: Any?, forKey defaultName: String) {
+        values[defaultName] = value
+    }
+}
+
 @Suite(.serialized)
 struct SpaceTests {
-    private func isolatedDefaults() -> UserDefaults {
-        let name = "SpaceTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
-        return defaults
+    private func isolatedDefaults() -> TestDefaults {
+        TestDefaults()
     }
 
     @MainActor
@@ -259,6 +272,22 @@ struct SpaceTests {
             == URL(fileURLWithPath: "/tmp").standardizedFileURL)
         #expect(relaunched.terminalSessions[1].workingDirectoryURL
             == URL(fileURLWithPath: "/").standardizedFileURL)
+    }
+
+    @Test @MainActor
+    func workspacePersistsWhenAppResignsActive() {
+        let defaults = isolatedDefaults()
+        let model = AppModel(defaults: defaults)
+        model.openNewTerminal()
+
+        let delegate = SpaceAppDelegate()
+        delegate.model = model
+        delegate.applicationDidResignActive(
+            Notification(name: NSApplication.didResignActiveNotification)
+        )
+
+        let relaunched = AppModel(defaults: defaults)
+        #expect(relaunched.terminalTabs.count == 2)
     }
 
     @Test @MainActor

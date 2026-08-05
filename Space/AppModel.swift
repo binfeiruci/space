@@ -51,7 +51,7 @@ final class AppModel {
     private var terminalTitleCancellables: [UUID: AnyCancellable] = [:]
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: any PreferencesStoring = UserDefaults.standard,
         processInspector: (any TerminalProcessInspecting)? = nil
     ) {
         self.processInspector = processInspector ?? TerminalProcessInspector()

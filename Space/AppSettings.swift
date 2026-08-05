@@ -38,9 +38,9 @@ final class AppSettings: ObservableObject {
             )
         }
     }
-    private let defaults: UserDefaults
+    private let defaults: any PreferencesStoring
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: any PreferencesStoring = UserDefaults.standard) {
         self.defaults = defaults
         appearance = AppearancePreference(
             rawValue: defaults.string(forKey: Keys.appearance) ?? ""

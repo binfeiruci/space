@@ -50,6 +50,10 @@ final class SpaceAppDelegate: NSObject, NSApplicationDelegate {
         model?.stopTerminalRuntimeMonitoring()
     }
 
+    func applicationDidResignActive(_ notification: Notification) {
+        model?.saveWorkspace()
+    }
+
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
@@ -211,7 +215,6 @@ struct SpaceApp: App {
         let environment = ProcessInfo.processInfo.environment
         if let suiteName = environment["SPACE_UI_TEST_DEFAULTS_SUITE"] {
             let defaults = UserDefaults(suiteName: suiteName) ?? .standard
-            defaults.removePersistentDomain(forName: suiteName)
             return AppModel(defaults: defaults)
         }
         #endif

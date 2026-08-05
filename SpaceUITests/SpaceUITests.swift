@@ -4,6 +4,8 @@ import XCTest
 
 final class SpaceUITests: XCTestCase {
     private var previousInputSource: TISInputSource?
+    private var isolatedApp: XCUIApplication?
+    private var isolatedDefaultsSuiteName: String?
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -15,6 +17,16 @@ final class SpaceUITests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        if let isolatedApp, isolatedApp.state != .notRunning {
+            isolatedApp.terminate()
+        }
+        isolatedApp = nil
+
+        if let isolatedDefaultsSuiteName {
+            removeDefaultsSuite(named: isolatedDefaultsSuiteName)
+            self.isolatedDefaultsSuiteName = nil
+        }
+
         if let previousInputSource {
             XCTAssertEqual(TISSelectInputSource(previousInputSource), noErr)
             self.previousInputSource = nil
@@ -22,10 +34,23 @@ final class SpaceUITests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    private func removeDefaultsSuite(named name: String) {
+        autoreleasepool {
+            let defaults = UserDefaults(suiteName: name)
+            defaults?.removePersistentDomain(forName: name)
+            defaults?.synchronize()
+        }
+
+        let preferencesURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences", isDirectory: true)
+        try? FileManager.default.removeItem(
+            at: preferencesURL.appendingPathComponent("\(name).plist")
+        )
+    }
+
     @MainActor
     func testNewTabCreatesAnotherTab() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let rows = terminalTabRows(in: app)
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 3))
@@ -41,7 +66,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testNewTabBelowCreatesAnotherTab() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let rows = terminalTabRows(in: app)
         let firstRow = rows.firstMatch
@@ -61,7 +85,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testDuplicateTabCreatesAnotherTab() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let rows = terminalTabRows(in: app)
         let firstRow = rows.firstMatch
@@ -81,7 +104,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testTabDividerCanBeAddedAndRemoved() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let rows = terminalTabRows(in: app)
         XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 3))
@@ -120,7 +142,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testNewSplitsCreateExpectedPanes() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let panes = app.descendants(matching: .any).matching(
             identifier: "terminal-split-pane"
@@ -139,7 +160,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testClosingThirdSplitKeepsPreviousSplitInteractive() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let panes = app.descendants(matching: .any).matching(
             identifier: "terminal-split-pane"
@@ -173,7 +193,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testCommandFFocusesTerminalSearchField() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         app.typeKey("f", modifierFlags: .command)
         let searchField = app.searchFields["terminal-search-field"]
@@ -185,7 +204,6 @@ final class SpaceUITests: XCTestCase {
     @MainActor
     func testTerminalUsesHiddenTitleBarSpace() throws {
         let app = launchIsolatedApp()
-        defer { app.terminate() }
 
         let window = app.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 3))
@@ -205,8 +223,11 @@ final class SpaceUITests: XCTestCase {
     private func launchIsolatedApp() -> XCUIApplication {
         let app = XCUIApplication()
         if app.state != .notRunning { app.terminate() }
+        let defaultsSuiteName = "SpaceUITests.\(UUID().uuidString)"
+        isolatedApp = app
+        isolatedDefaultsSuiteName = defaultsSuiteName
         app.launchEnvironment["SPACE_UI_TEST_DEFAULTS_SUITE"] =
-            "SpaceUITests.\(UUID().uuidString)"
+            defaultsSuiteName
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
         return app

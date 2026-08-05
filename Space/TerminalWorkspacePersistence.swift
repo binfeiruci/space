@@ -33,9 +33,9 @@ struct TerminalWorkspaceStore {
         let items: [SidebarItem]
     }
 
-    private let defaults: UserDefaults
+    private let defaults: any PreferencesStoring
 
-    init(defaults: UserDefaults) {
+    init(defaults: any PreferencesStoring) {
         self.defaults = defaults
     }
 
