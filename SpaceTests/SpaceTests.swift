@@ -124,7 +124,29 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func terminalTitleOnlyIgnoresHomeDirectoryPath() {
+    func anyKnownShellUsesCurrentDirectoryName() {
+        let session = TerminalSession(
+            workingDirectoryURL: URL(fileURLWithPath: "/tmp/initial"),
+            defaultShellPath: "/bin/zsh"
+        )
+
+        session.updateProcessState(.init(
+            name: "bash",
+            workingDirectory: "/tmp/bash-project"
+        ))
+        #expect(session.displayTitle(
+            terminalTitle: "Editing README.md"
+        ) == "bash-project")
+
+        session.updateProcessState(.init(
+            name: "fish",
+            workingDirectory: "/tmp/fish-project"
+        ))
+        #expect(session.displayTitle() == "fish-project")
+    }
+
+    @Test @MainActor
+    func nonShellPathTitlesUseProcessName() {
         let session = TerminalSession(
             workingDirectoryURL: URL(fileURLWithPath: "/tmp"),
             defaultShellPath: "/bin/zsh"
@@ -132,18 +154,40 @@ struct SpaceTests {
         let homeURL = FileManager.default.homeDirectoryForCurrentUser
         session.updateProcessState(.init(name: "vim", workingDirectory: nil))
 
-        #expect(session.displayTitle(
-            terminalTitle: "file:///tmp/project"
-        ) == "file:///tmp/project")
-        #expect(session.displayTitle(
-            terminalTitle: homeURL.path
-        ) == "vim")
-        #expect(session.displayTitle(
-            terminalTitle: homeURL.absoluteString
-        ) == homeURL.absoluteString)
+        let pathTitles = [
+            "file:///tmp/project",
+            "/Users/example/code/project",
+            "~/code/project",
+            "/",
+            homeURL.path,
+            homeURL.absoluteString,
+            "~",
+        ]
+        for title in pathTitles {
+            #expect(session.displayTitle(terminalTitle: title) == "vim")
+        }
+        #expect(session.displayTitle() == "vim")
         #expect(session.displayTitle(
             terminalTitle: "Editing README.md"
         ) == "Editing README.md")
+    }
+
+    @Test @MainActor
+    func pathTitlesUseDirectoryNameWithoutAProcess() {
+        let session = TerminalSession(
+            workingDirectoryURL: URL(fileURLWithPath: "/tmp"),
+            defaultShellPath: "/bin/zsh"
+        )
+        let homeURL = FileManager.default.homeDirectoryForCurrentUser
+
+        let expectedTitles = [
+            ("/Users/example/code/project", "project"),
+            (homeURL.path, "~"),
+            ("/", "/"),
+        ]
+        for (title, expected) in expectedTitles {
+            #expect(session.displayTitle(terminalTitle: title) == expected)
+        }
     }
 
     @Test @MainActor

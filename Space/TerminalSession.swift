@@ -107,26 +107,22 @@ final class TerminalSession: ObservableObject, Identifiable {
 
     func displayTitle(terminalTitle: String = "") -> String {
         let processName = currentProcessName.flatMap(Self.processName(from:))
-        if processName == defaultShellName {
-            return directoryName
+        guard !isShellProcess(processName) else {
+            return currentDirectoryName
         }
 
         let title = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty,
-           !Self.isHomeDirectory(URL(fileURLWithPath: title)) {
-            return title
+        guard !title.isEmpty else {
+            return processName ?? currentDirectoryName
         }
-        return processName ?? directoryName
+        if let pathURL = Self.fileURL(fromTitle: title) {
+            return processName ?? Self.directoryDisplayName(for: pathURL)
+        }
+        return title
     }
 
-    private var directoryName: String {
-        let url = currentWorkingDirectoryURL
-        let homePath = FileManager.default.homeDirectoryForCurrentUser
-            .standardizedFileURL.path
-        if url.path == homePath {
-            return "~"
-        }
-        return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    private var currentDirectoryName: String {
+        Self.directoryDisplayName(for: currentWorkingDirectoryURL)
     }
 
     private func directoryURL(from value: String?) -> URL? {
@@ -142,11 +138,57 @@ final class TerminalSession: ObservableObject, Identifiable {
         return value?.isEmpty == false ? value : nil
     }
 
-    private static func isHomeDirectory(_ url: URL) -> Bool {
-        return url.standardizedFileURL.path
-            == FileManager.default.homeDirectoryForCurrentUser
-                .standardizedFileURL.path
+    private func isShellProcess(_ processName: String?) -> Bool {
+        guard let processName else { return false }
+        return processName == defaultShellName
+            || Self.shellProcessNames.contains(processName)
     }
+
+    private static func fileURL(fromTitle title: String) -> URL? {
+        if title == "~" {
+            return homeDirectoryURL
+        }
+        if title.hasPrefix("/") {
+            return URL(fileURLWithPath: title)
+        }
+        if title.hasPrefix("~/") {
+            return homeDirectoryURL
+                .appendingPathComponent(String(title.dropFirst(2)))
+        }
+        if let candidate = URL(string: title), candidate.isFileURL {
+            return candidate
+        }
+        return nil
+    }
+
+    private static func directoryDisplayName(for url: URL) -> String {
+        let url = url.standardizedFileURL
+        if url.path == homeDirectoryURL.path { return "~" }
+        return url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
+    }
+
+    private static let homeDirectoryURL = FileManager.default
+        .homeDirectoryForCurrentUser.standardizedFileURL
+
+    private static let shellProcessNames: Set<String> = {
+        var names: Set<String> = [
+            "ash", "bash", "csh", "dash", "elvish", "fish", "ksh",
+            "mksh", "nu", "pwsh", "sh", "tcsh", "xonsh", "zsh",
+        ]
+        if let contents = try? String(
+            contentsOfFile: "/etc/shells",
+            encoding: .utf8
+        ) {
+            for line in contents.split(whereSeparator: \.isNewline) {
+                let path = line.trimmingCharacters(in: .whitespaces)
+                guard path.hasPrefix("/") else { continue }
+                if let name = processName(from: path) {
+                    names.insert(name)
+                }
+            }
+        }
+        return names
+    }()
 
     private static var loginShellPath: String {
         if let shellPath = ProcessInfo.processInfo.environment["SHELL"],
