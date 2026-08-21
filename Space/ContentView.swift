@@ -61,7 +61,11 @@ private struct SidebarRowColors {
     let primary: Color
     let secondary: Color
 
-    init(appearance: NSAppearance = NSApp.effectiveAppearance) {
+    init(colorScheme: ColorScheme) {
+        // NSApp.effectiveAppearance does not track preferredColorScheme.
+        let appearance = NSAppearance(
+            named: colorScheme == .dark ? .darkAqua : .aqua
+        ) ?? NSApp.effectiveAppearance
         primary = Self.resolve(.labelColor, appearance: appearance)
         secondary = Self.resolve(.secondaryLabelColor, appearance: appearance)
     }
@@ -90,6 +94,7 @@ private struct SidebarStatusDot: View {
 
 private struct TabSidebar: View {
     @Environment(AppModel.self) private var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     private var selection: Binding<TerminalTabSidebarItem?> {
         Binding(
@@ -123,7 +128,7 @@ private struct TabSidebar: View {
                     shortcutLabel: shortcutLabel(for: tab),
                     accessibilityIdentifier: "terminal-tab-row:"
                         + tab.id.uuidString,
-                    colors: SidebarRowColors()
+                    colors: SidebarRowColors(colorScheme: colorScheme)
                 )
                 .tag(item)
             }
