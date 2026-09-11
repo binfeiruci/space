@@ -1,6 +1,6 @@
 # Space Development Guidelines
 
-import skill in /code/agent/skills/host-command-runner
+use /code/agent/skills/host-command-runner
 
 ## Restarting the Application
 
