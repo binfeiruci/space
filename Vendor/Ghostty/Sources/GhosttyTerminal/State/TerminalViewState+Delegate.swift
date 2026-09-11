@@ -15,6 +15,7 @@ extension TerminalViewState:
     TerminalSurfaceCloseDelegate,
     TerminalSurfaceBellDelegate,
     TerminalSurfaceDesktopNotificationDelegate,
+    TerminalSurfaceOpenURLDelegate,
     TerminalSurfacePwdDelegate,
     TerminalSurfaceCommandFinishedDelegate,
     TerminalSurfaceLifecycleDelegate
@@ -44,6 +45,10 @@ extension TerminalViewState:
         lastDesktopNotificationTitle = title
         lastDesktopNotificationBody = body
         lastDesktopNotificationAt = Date()
+    }
+
+    public func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) {
+        onOpenURL?(url, kind)
     }
 
     public func terminalDidChangeWorkingDirectory(_ path: String) {

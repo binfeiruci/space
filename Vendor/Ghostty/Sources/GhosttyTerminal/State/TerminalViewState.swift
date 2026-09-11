@@ -31,6 +31,7 @@ public final class TerminalViewState: ObservableObject {
 
     @Published public var configuration: TerminalSurfaceOptions = .init()
     public var onClose: ((Bool) -> Void)?
+    public var onOpenURL: ((String, TerminalOpenURLKind) -> Void)?
     @Published public internal(set) var controller: TerminalController
 
     /// Sends text to the attached surface.

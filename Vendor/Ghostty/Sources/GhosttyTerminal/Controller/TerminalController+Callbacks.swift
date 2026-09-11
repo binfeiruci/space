@@ -31,6 +31,17 @@ private enum TerminalCallbacks {
         let bridge = Unmanaged<TerminalCallbackBridge>
             .fromOpaque(bridgePtr)
             .takeUnretainedValue()
+
+        // URL actions are initiated by AppKit mouse input on the main thread.
+        // Return the delegate's result synchronously so Ghostty doesn't invoke
+        // its fallback opener. In particular, current Ghostty intentionally
+        // refuses to fallback-open untrusted OSC 8 targets on macOS.
+        if action.tag == GHOSTTY_ACTION_OPEN_URL, Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                bridge.handleOpenURL(action.action.open_url)
+            }
+        }
+
         terminalRunOnMain {
             bridge.handleAction(action)
         }

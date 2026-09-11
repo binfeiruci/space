@@ -99,6 +99,27 @@ struct SpaceTests {
         #expect(TerminalSearchAction.end == "end_search")
     }
 
+    @Test
+    func terminalURLLauncherAllowsWebLinksAndRejectsUnsafeOSC8Targets() throws {
+        let webURL = try #require(TerminalURLLauncher.resolve(
+            "https://example.com/path",
+            kind: .osc8
+        ))
+        #expect(webURL.absoluteString == "https://example.com/path")
+        #expect(TerminalURLLauncher.resolve(
+            "file:///tmp/payload.command",
+            kind: .osc8
+        ) == nil)
+        #expect(TerminalURLLauncher.resolve(
+            "custom-handler://payload",
+            kind: .osc8
+        ) == nil)
+        #expect(TerminalURLLauncher.resolve(
+            "https://example.com/a\u{202E}b",
+            kind: .osc8
+        ) == nil)
+    }
+
     @Test @MainActor
     func shellTitleUsesCurrentDirectoryName() {
         let session = TerminalSession(

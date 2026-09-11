@@ -101,20 +101,7 @@ final class TerminalCallbackBridge {
                 .terminalDidRequestDesktopNotification(title: title, body: body)
 
         case GHOSTTY_ACTION_OPEN_URL:
-            let payload = action.action.open_url
-            let kind = TerminalOpenURLKind(payload.kind)
-            let url: String = payload.url.map { ptr in
-                // Ghostty provides a length-prefixed string; respect the
-                // documented length rather than trusting a NUL terminator.
-                let buf = UnsafeBufferPointer(start: ptr, count: Int(payload.len))
-                return String(decoding: buf.map(UInt8.init), as: UTF8.self)
-            } ?? ""
-            TerminalDebugLog.log(
-                .actions,
-                "callback action=open_url kind=\(kind) url=\(TerminalDebugLog.describe(url))"
-            )
-            (delegate as? any TerminalSurfaceOpenURLDelegate)?
-                .terminalDidRequestOpenURL(url, kind: kind)
+            _ = handleOpenURL(action.action.open_url)
 
         case GHOSTTY_ACTION_MOUSE_OVER_LINK:
             let payload = action.action.mouse_over_link
@@ -148,6 +135,26 @@ final class TerminalCallbackBridge {
                 "callback action=\(TerminalDebugLog.describe(action.tag))"
             )
         }
+    }
+
+    @discardableResult
+    func handleOpenURL(_ payload: ghostty_action_open_url_s) -> Bool {
+        guard let delegate = delegate as? any TerminalSurfaceOpenURLDelegate else {
+            return false
+        }
+        let kind = TerminalOpenURLKind(payload.kind)
+        let url: String = payload.url.map { ptr in
+            // Ghostty provides a length-prefixed string; respect the
+            // documented length rather than trusting a NUL terminator.
+            let buf = UnsafeBufferPointer(start: ptr, count: Int(payload.len))
+            return String(decoding: buf.map(UInt8.init), as: UTF8.self)
+        } ?? ""
+        TerminalDebugLog.log(
+            .actions,
+            "callback action=open_url kind=\(kind) url=\(TerminalDebugLog.describe(url))"
+        )
+        delegate.terminalDidRequestOpenURL(url, kind: kind)
+        return true
     }
 
     func handleClose(processAlive: Bool) {
