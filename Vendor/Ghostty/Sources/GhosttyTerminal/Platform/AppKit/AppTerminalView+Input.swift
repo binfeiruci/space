@@ -238,13 +238,24 @@
         }
 
         override open func scrollWheel(with event: NSEvent) {
+            var x = event.scrollingDeltaX
+            var y = event.scrollingDeltaY
+            let precision = event.hasPreciseScrollingDeltas
+            if precision {
+                // Match Ghostty's macOS frontend. Precise devices report
+                // smaller point deltas, so scale them before Ghostty converts
+                // the accumulated distance into terminal rows.
+                x *= 2
+                y *= 2
+            }
+
             let scrollMods = TerminalScrollModifiers(
-                precision: event.hasPreciseScrollingDeltas,
+                precision: precision,
                 momentum: TerminalScrollModifiers.momentumFrom(phase: event.momentumPhase)
             )
             surface?.sendMouseScroll(
-                x: event.scrollingDeltaX,
-                y: event.scrollingDeltaY,
+                x: x,
+                y: y,
                 mods: scrollMods.rawValue
             )
         }
