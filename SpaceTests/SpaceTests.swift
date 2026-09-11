@@ -243,6 +243,31 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func preparingContainerForRemovalDetachesTerminalView() async throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let session = try #require(model.activeTerminalSession)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let container = SpaceTerminalContainerView(
+            frame: window.contentView!.bounds
+        )
+        window.contentView?.addSubview(container)
+        let terminalView = NSView(frame: .zero)
+        container.attach(terminalView, for: session)
+        await nextMainRunLoop()
+        #expect(terminalView.superview === container)
+
+        container.prepareForRemoval()
+
+        #expect(terminalView.superview == nil)
+        #expect(session.terminalContainer == nil)
+    }
+
+    @Test @MainActor
     func reusedSplitContainerClaimsTheNewSession() async throws {
         let model = AppModel(defaults: isolatedDefaults())
         let firstSession = try #require(model.activeTerminalSession)

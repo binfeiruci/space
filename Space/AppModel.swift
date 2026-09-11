@@ -366,6 +366,9 @@ final class AppModel {
 
         closingSession.terminal.onClose = nil
         stopTrackingTerminalTitle(for: id)
+        closingSession.terminalView?.dispose()
+        closingSession.terminalView = nil
+        closingSession.terminalContainer = nil
         if let updatedRoot = closingTab.root.removing(id) {
             terminalTabs[tabIndex].root = updatedRoot.balancedForEqualSplits()
             if closingTab.focusedTerminalID == id,

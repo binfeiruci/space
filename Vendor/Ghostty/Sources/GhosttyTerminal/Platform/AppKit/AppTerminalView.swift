@@ -39,6 +39,20 @@
             core.setDisplayVisible(visible)
         }
 
+        /// Permanently releases the terminal surface and its graphics resources.
+        /// The view must not be reused after disposal.
+        open func dispose() {
+            core.freeSurface()
+            delegate = nil
+            controller = nil
+            onFocusChange = nil
+            inputHandler = nil
+            removeFromSuperview()
+            layer?.contents = nil
+            layer = nil
+            metalLayer = nil
+        }
+
         var surface: TerminalSurface? {
             core.surface
         }

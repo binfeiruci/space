@@ -62,6 +62,9 @@ final class TerminalSurfaceCoordinator {
     var onPostRender: (() -> Void)?
 
     private var lastMetrics: TerminalViewportMetrics?
+    private var lastPixelWidth: UInt32?
+    private var lastPixelHeight: UInt32?
+    private var lastContentScale: Double?
     private var isDisplayVisible = true
     private var isApplicationActive = true
     private var isSurfaceFocused = false
@@ -149,7 +152,7 @@ final class TerminalSurfaceCoordinator {
 
     // MARK: - Metrics
 
-    func synchronizeMetrics() {
+    func synchronizeMetrics(force: Bool = false) {
         guard let surface else {
             TerminalDebugLog.log(.metrics, "synchronizeMetrics skipped: missing surface")
             return
@@ -180,8 +183,24 @@ final class TerminalSurfaceCoordinator {
             "sync view=\(String(format: "%.2f", size.width))x\(String(format: "%.2f", size.height)) scale=\(String(format: "%.2f", scale)) pixels=\(pixelWidth)x\(pixelHeight)"
         )
 
-        surface.setContentScale(x: scale, y: scale)
-        surface.setSize(width: pixelWidth, height: pixelHeight)
+        let scaleChanged = scale != lastContentScale
+        let sizeChanged = pixelWidth != lastPixelWidth
+            || pixelHeight != lastPixelHeight
+        guard force || scaleChanged || sizeChanged else {
+            TerminalDebugLog.log(.metrics, "sync skipped: dimensions unchanged")
+            onMetricsUpdate?()
+            return
+        }
+
+        if force || scaleChanged {
+            surface.setContentScale(x: scale, y: scale)
+        }
+        if force || sizeChanged {
+            surface.setSize(width: pixelWidth, height: pixelHeight)
+        }
+        lastPixelWidth = pixelWidth
+        lastPixelHeight = pixelHeight
+        lastContentScale = scale
 
         guard let surfaceSize = surface.size(),
               surfaceSize.columns > 0, surfaceSize.rows > 0
@@ -318,6 +337,9 @@ final class TerminalSurfaceCoordinator {
         surface?.free()
         surface = nil
         lastMetrics = nil
+        lastPixelWidth = nil
+        lastPixelHeight = nil
+        lastContentScale = nil
         pendingImmediateTick = true
         lastTickTimestamp = 0
         controller?.remove(bridge)
@@ -332,7 +354,9 @@ final class TerminalSurfaceCoordinator {
             .metrics,
             "cell size changed width=\(width) height=\(height)"
         )
-        synchronizeMetrics()
+        // A cell-size change alters the terminal grid even when the view's
+        // pixel dimensions are unchanged.
+        synchronizeMetrics(force: true)
         requestImmediateTick()
         onCellSizeDidChange?()
     }

@@ -550,6 +550,9 @@ final class SpaceTerminalContainerView: NSView {
         if terminalSession?.terminalContainer === self {
             terminalSession?.terminalContainer = nil
         }
+        if terminalView?.superview === self {
+            terminalView?.removeFromSuperview()
+        }
         terminalView = nil
         terminalSession = nil
         onActivate = nil
