@@ -6,7 +6,7 @@ struct TerminalProcessState: Sendable, Equatable {
     let workingDirectory: String?
 }
 
-protocol TerminalProcessInspecting: Sendable {
+nonisolated protocol TerminalProcessInspecting: Sendable {
     func processStates(
         for requests: [TerminalProcessInspector.Request]
     ) async -> [UUID: TerminalProcessState]

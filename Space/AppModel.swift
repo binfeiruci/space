@@ -32,13 +32,19 @@ final class AppModel {
         willSet { workspaceIndex.indexTabs(newValue) }
     }
     private(set) var activeTabID: UUID? {
-        didSet { markActiveTabRead() }
+        didSet {
+            markActiveTabRead()
+            updateDisplayedTab()
+        }
     }
+    private(set) var displayedTabID: UUID?
     private(set) var alertRequest: AlertRequest?
     private(set) var isSidebarVisible = true
     private(set) var unreadTitleTabIDs: Set<UUID> = []
     private(set) var tabSidebarItems: [TerminalTabSidebarItem] = []
+    private(set) var pendingSplitTerminalIDs: Set<UUID> = []
     private var activeTitleTerminalIDs: Set<UUID> = []
+    private var renderedTabIDs: Set<UUID> = []
     private(set) var terminalLayoutRevision = 0
 
     let settings: AppSettings
@@ -70,6 +76,7 @@ final class AppModel {
         }
         workspaceIndex.indexSessions(terminalSessions)
         workspaceIndex.indexTabs(terminalTabs)
+        displayedTabID = activeTabID
     }
 
     var activeTerminalTab: TerminalTabState? {
@@ -92,6 +99,32 @@ final class AppModel {
 
     func terminalTab(id: UUID) -> TerminalTabState? {
         workspaceIndex.tabIndex(id: id).map { terminalTabs[$0] }
+    }
+
+    func terminalDidRenderFrame(for terminalID: UUID) {
+        // Finish the view switch after the rendered layer reaches the next
+        // AppKit transaction.
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  let tabIndex = terminalTabIndex(containing: terminalID)
+            else { return }
+            let tabID = terminalTabs[tabIndex].id
+            pendingSplitTerminalIDs.remove(terminalID)
+            renderedTabIDs.insert(tabID)
+            updateDisplayedTab()
+        }
+    }
+
+    private func updateDisplayedTab() {
+        guard let activeTabID else {
+            displayedTabID = nil
+            return
+        }
+        if displayedTabID == nil
+            || !terminalTabs.contains(where: { $0.id == displayedTabID })
+            || renderedTabIDs.contains(activeTabID) {
+            displayedTabID = activeTabID
+        }
     }
 
     func startTerminalRuntimeMonitoring() {
@@ -211,6 +244,7 @@ final class AppModel {
             surfaceContext: .split
         )
         bindCloseHandler(to: session)
+        pendingSplitTerminalIDs.insert(session.id)
         terminalSessions.append(session)
         terminalTabs[tabIndex].root = terminalTabs[tabIndex].root.inserting(
             session.id,
@@ -369,6 +403,8 @@ final class AppModel {
         closingSession.terminalView?.dispose()
         closingSession.terminalView = nil
         closingSession.terminalContainer = nil
+        closingSession.pendingTerminalContainer = nil
+        pendingSplitTerminalIDs.remove(id)
         if let updatedRoot = closingTab.root.removing(id) {
             terminalTabs[tabIndex].root = updatedRoot.balancedForEqualSplits()
             if closingTab.focusedTerminalID == id,
@@ -380,6 +416,7 @@ final class AppModel {
             terminalTabs.remove(at: tabIndex)
             tabSidebarItems.removeAll { $0.tabID == closingTab.id }
             unreadTitleTabIDs.remove(closingTab.id)
+            renderedTabIDs.remove(closingTab.id)
         }
         terminalSessions.remove(at: sessionIndex)
 

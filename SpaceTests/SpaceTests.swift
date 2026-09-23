@@ -399,6 +399,69 @@ struct SpaceTests {
     }
 
     @Test @MainActor
+    func newTabWaitsForItsFirstRenderedFrame() async throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        let firstID = try #require(model.activeTabID)
+        model.terminalDidRenderFrame(for: firstID)
+        await nextMainRunLoop()
+
+        model.openNewTerminal()
+        let newID = try #require(model.activeTabID)
+        #expect(model.displayedTabID == firstID)
+
+        model.terminalDidRenderFrame(for: newID)
+        #expect(model.displayedTabID == firstID)
+        await nextMainRunLoop()
+        #expect(model.displayedTabID == newID)
+
+        model.selectTab(firstID)
+        #expect(model.displayedTabID == firstID)
+    }
+
+    @Test @MainActor
+    func newSplitWaitsForItsFirstRenderedFrame() async throws {
+        let model = AppModel(defaults: isolatedDefaults())
+        model.splitActiveTerminal(direction: .right)
+        let newID = try #require(model.activeTerminalID)
+        #expect(model.pendingSplitTerminalIDs.contains(newID))
+
+        model.terminalDidRenderFrame(for: newID)
+        #expect(model.pendingSplitTerminalIDs.contains(newID))
+        await nextMainRunLoop()
+        #expect(!model.pendingSplitTerminalIDs.contains(newID))
+    }
+
+    @Test @MainActor
+    func splitContainerTransfersViewWhenOldOneCloses() async {
+        let session = TerminalSession(
+            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSView(frame: window.contentView!.bounds)
+        window.contentView = host
+        let oldContainer = SpaceTerminalContainerView(frame: host.bounds)
+        let newContainer = SpaceTerminalContainerView(frame: host.bounds)
+        let view = NSView(frame: host.bounds)
+        host.addSubview(oldContainer)
+        oldContainer.attach(view, for: session)
+        await nextMainRunLoop()
+        #expect(session.terminalContainer === oldContainer)
+
+        host.addSubview(newContainer)
+        newContainer.attach(view, for: session)
+        #expect(session.pendingTerminalContainer === newContainer)
+        oldContainer.prepareForRemoval()
+        #expect(session.terminalContainer === newContainer)
+        #expect(view.superview === newContainer)
+        window.contentView = nil
+    }
+
+    @Test @MainActor
     func tabsCanBeReorderedWithoutRecreatingSessionsOrSplits() throws {
         let model = AppModel(defaults: isolatedDefaults())
         let firstID = try #require(model.activeTabID)

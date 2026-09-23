@@ -146,12 +146,17 @@ final class SpaceUITests: XCTestCase {
         let panes = app.descendants(matching: .any).matching(
             identifier: "terminal-split-pane"
         )
+        let dividers = app.descendants(matching: .any).matching(
+            identifier: "terminal-split-divider"
+        )
         XCTAssertEqual(panes.count, 1)
         app.typeKey("d", modifierFlags: .command)
         app.typeKey("d", modifierFlags: [.command, .shift])
 
         expectation(
-            for: NSPredicate { _, _ in panes.count == 3 },
+            for: NSPredicate { _, _ in
+                panes.count == 3 && dividers.count == 2
+            },
             evaluatedWith: nil
         )
         waitForExpectations(timeout: 3)

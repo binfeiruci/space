@@ -7,16 +7,21 @@ struct TerminalArea: View {
 
     var body: some View {
         let _ = model.terminalLayoutRevision
+        let activeTabID = model.activeTabID
+        let displayedTabID = model.displayedTabID
         ZStack {
             ForEach(model.terminalTabs) { tab in
+                let isActive = activeTabID == tab.id
+                let isDisplayed = displayedTabID == tab.id
                 TerminalSplitTree(
                     node: tab.root,
-                    isVisible: model.activeTerminalTab?.id == tab.id,
+                    isVisible: isActive || isDisplayed,
                     showsFocusBorder: tab.terminalIDs.count > 1
                 )
-                .opacity(model.activeTerminalTab?.id == tab.id ? 1 : 0)
-                .allowsHitTesting(model.activeTerminalTab?.id == tab.id)
-                .accessibilityHidden(model.activeTerminalTab?.id != tab.id)
+                .opacity(isActive || isDisplayed ? 1 : 0)
+                .zIndex(isDisplayed ? 1 : 0)
+                .allowsHitTesting(isActive && isDisplayed)
+                .accessibilityHidden(!isActive)
             }
         }
     }
@@ -44,9 +49,9 @@ private struct TerminalSplitTree: View {
                 .id(session.id)
                 .overlay {
                     Rectangle()
-                        .stroke(
+                        .strokeBorder(
                             isVisible && isFocused && showsFocusBorder
-                                ? Color.accentColor.opacity(0.7)
+                                ? Color.accentColor.opacity(0.22)
                                 : Color.clear,
                             lineWidth: 1
                         )
@@ -82,56 +87,70 @@ private struct TerminalSplitContainer: View {
     @GestureState private var draggedRatio: CGFloat?
     @State private var isDividerHovered = false
 
-    private let dividerVisibleSize: CGFloat = 1
-    private let dividerInvisibleSize: CGFloat = 6
+    // Keep the hit area without opening a gap between the terminal panes.
+    private let dividerHitSize: CGFloat = 6
 
     var body: some View {
         GeometryReader { geometry in
             let containerLength = primaryLength(in: geometry.size)
-            let availableLength = max(
-                containerLength - dividerVisibleSize,
-                0
-            )
             let effectiveRatio = clampedRatio(draggedRatio ?? ratio)
-            let firstLength = availableLength * effectiveRatio
-            let secondLength = availableLength - firstLength
+            let firstLength = containerLength * effectiveRatio
+            let secondLength = containerLength - firstLength
+            let firstPending = isPendingSplitPane(first)
+            let secondPending = isPendingSplitPane(second)
+            // Keep the existing pane full size while the new pane renders
+            // behind it, then reveal the final split in one update.
+            let coverWithFirst = secondPending && !firstPending
+            let coverWithSecond = firstPending && !secondPending
 
             ZStack(alignment: .topLeading) {
                 switch axis {
                 case .horizontal:
                     splitChild(first)
                         .frame(
-                            width: firstLength,
+                            width: coverWithFirst
+                                ? geometry.size.width : firstLength,
                             height: geometry.size.height
                         )
+                        .zIndex(coverWithFirst ? 1 : 0)
                     splitChild(second)
                         .frame(
-                            width: secondLength,
+                            width: coverWithSecond
+                                ? geometry.size.width : secondLength,
                             height: geometry.size.height
                         )
-                        .offset(x: firstLength + dividerVisibleSize)
-                    divider(containerLength: containerLength)
-                        .position(
-                            x: firstLength + dividerVisibleSize / 2,
-                            y: geometry.size.height / 2
-                        )
+                        .offset(x: coverWithSecond ? 0 : firstLength)
+                        .zIndex(coverWithSecond ? 1 : 0)
+                    if !coverWithFirst && !coverWithSecond {
+                        divider(containerLength: containerLength)
+                            .position(
+                                x: firstLength,
+                                y: geometry.size.height / 2
+                            )
+                    }
                 case .vertical:
                     splitChild(first)
                         .frame(
                             width: geometry.size.width,
-                            height: firstLength
+                            height: coverWithFirst
+                                ? geometry.size.height : firstLength
                         )
+                        .zIndex(coverWithFirst ? 1 : 0)
                     splitChild(second)
                         .frame(
                             width: geometry.size.width,
-                            height: secondLength
+                            height: coverWithSecond
+                                ? geometry.size.height : secondLength
                         )
-                        .offset(y: firstLength + dividerVisibleSize)
-                    divider(containerLength: containerLength)
-                        .position(
-                            x: geometry.size.width / 2,
-                            y: firstLength + dividerVisibleSize / 2
-                        )
+                        .offset(y: coverWithSecond ? 0 : firstLength)
+                        .zIndex(coverWithSecond ? 1 : 0)
+                    if !coverWithFirst && !coverWithSecond {
+                        divider(containerLength: containerLength)
+                            .position(
+                                x: geometry.size.width / 2,
+                                y: firstLength
+                            )
+                    }
                 }
             }
             .coordinateSpace(name: splitID)
@@ -144,60 +163,52 @@ private struct TerminalSplitContainer: View {
             isVisible: isVisible,
             showsFocusBorder: showsFocusBorder
         )
-            .clipped()
+        .clipped()
+    }
+
+    private func isPendingSplitPane(_ node: TerminalSplitNode) -> Bool {
+        guard case let .pane(id) = node else { return false }
+        return model.pendingSplitTerminalIDs.contains(id)
     }
 
     private func divider(containerLength: CGFloat) -> some View {
-        ZStack {
-            Color.clear
-                .frame(
-                    width: axis == .horizontal
-                        ? dividerVisibleSize + dividerInvisibleSize
-                        : nil,
-                    height: axis == .vertical
-                        ? dividerVisibleSize + dividerInvisibleSize
-                        : nil
-                )
-                .contentShape(Rectangle())
-
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(
-                    width: axis == .horizontal ? dividerVisibleSize : nil,
-                    height: axis == .vertical ? dividerVisibleSize : nil
-                )
-        }
-        .gesture(
-            DragGesture(minimumDistance: 0, coordinateSpace: .named(splitID))
-                .updating($draggedRatio) { value, draggedRatio, _ in
-                    let length = primaryLength(in: value.location)
-                    draggedRatio = ratioForDividerLocation(
-                        length,
-                        containerLength: containerLength
-                    )
-                }
-                .onEnded { value in
-                    let length = primaryLength(in: value.location)
-                    model.updateSplitRatio(
-                        ratioForDividerLocation(
+        Color.clear
+            .frame(
+                width: axis == .horizontal ? dividerHitSize : nil,
+                height: axis == .vertical ? dividerHitSize : nil
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(splitID))
+                    .updating($draggedRatio) { value, draggedRatio, _ in
+                        let length = primaryLength(in: value.location)
+                        draggedRatio = ratioForDividerLocation(
                             length,
                             containerLength: containerLength
-                        ),
-                        for: splitID
-                    )
-                }
-        )
-        .onHover(perform: updateDividerHover)
-        .onDisappear {
-            updateDividerHover(false)
-        }
-        .accessibilityElement()
-        .accessibilityLabel(
-            axis == .horizontal
-                ? "Resize Horizontal Split"
-                : "Resize Vertical Split"
-        )
-        .accessibilityIdentifier("terminal-split-divider")
+                        )
+                    }
+                    .onEnded { value in
+                        let length = primaryLength(in: value.location)
+                        model.updateSplitRatio(
+                            ratioForDividerLocation(
+                                length,
+                                containerLength: containerLength
+                            ),
+                            for: splitID
+                        )
+                    }
+            )
+            .onHover(perform: updateDividerHover)
+            .onDisappear {
+                updateDividerHover(false)
+            }
+            .accessibilityElement()
+            .accessibilityLabel(
+                axis == .horizontal
+                    ? "Resize Horizontal Split"
+                    : "Resize Vertical Split"
+            )
+            .accessibilityIdentifier("terminal-split-divider")
     }
 
     private func primaryLength(in size: CGSize) -> CGFloat {
@@ -227,10 +238,7 @@ private struct TerminalSplitContainer: View {
         _ location: CGFloat,
         containerLength: CGFloat
     ) -> CGFloat {
-        let availableLength = max(containerLength - dividerVisibleSize, 1)
-        return clampedRatio(
-            (location - dividerVisibleSize / 2) / availableLength
-        )
+        return clampedRatio(location / max(containerLength, 1))
     }
 
     private func clampedRatio(_ proposedRatio: CGFloat) -> CGFloat {
@@ -239,19 +247,24 @@ private struct TerminalSplitContainer: View {
 }
 
 private struct GhosttyTerminalPane: View {
+    @Environment(AppModel.self) private var model: AppModel
     @ObservedObject var session: TerminalSession
     let isVisible: Bool
     let isFocused: Bool
     let activate: () -> Void
 
     var body: some View {
+        let terminalID = session.id
         ZStack(alignment: .topTrailing) {
             SpaceTerminalViewRepresentable(
                 session: session,
                 isVisible: isVisible,
                 requestsFocus: isFocused && !session.isSearchPresented,
                 focusRequest: session.terminalFocusRequest,
-                onActivate: activate
+                onActivate: activate,
+                onFirstFrameRendered: { [weak model] in
+                    model?.terminalDidRenderFrame(for: terminalID)
+                }
             )
 
             if session.isSearchPresented {
@@ -455,6 +468,7 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
     let requestsFocus: Bool
     let focusRequest: Int
     let onActivate: () -> Void
+    let onFirstFrameRendered: () -> Void
 
     func makeNSView(context: Context) -> SpaceTerminalContainerView {
         let container = SpaceTerminalContainerView(frame: .zero)
@@ -487,6 +501,13 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
         view.delegate = session.terminal
         view.controller = session.terminal.controller
         view.configuration = session.terminal.configuration
+        if !session.hasRenderedFrame {
+            view.onNextFrameRendered = { [weak session] in
+                guard let session else { return }
+                session.hasRenderedFrame = true
+                onFirstFrameRendered()
+            }
+        }
         container.configure(
             view,
             for: session,
@@ -502,7 +523,15 @@ private struct SpaceTerminalViewRepresentable: NSViewRepresentable {
 final class SpaceTerminalContainerView: NSView {
     private static let attachmentRetryDelay: TimeInterval = 0.01
     private static let maximumAttachmentRetries = 20
+    private static var nextCreationSequence = 0
 
+    private static func allocateCreationSequence() -> Int {
+        nextCreationSequence += 1
+        return nextCreationSequence
+    }
+
+    private let creationSequence = SpaceTerminalContainerView
+        .allocateCreationSequence()
     private weak var terminalView: NSView?
     private weak var terminalSession: TerminalSession?
     private var attachmentRequest = 0
@@ -534,6 +563,9 @@ final class SpaceTerminalContainerView: NSView {
             if terminalSession?.terminalContainer === self {
                 terminalSession?.terminalContainer = nil
             }
+            if terminalSession?.pendingTerminalContainer === self {
+                terminalSession?.pendingTerminalContainer = nil
+            }
             if terminalView?.superview === self {
                 terminalView?.removeFromSuperview()
             }
@@ -541,18 +573,23 @@ final class SpaceTerminalContainerView: NSView {
         terminalView = view
         terminalSession = session
         guard window != nil else { return }
-        scheduleAttachment()
+        attachOrSchedule()
     }
 
     func prepareForRemoval() {
+        let session = terminalSession
         attachmentRequest &+= 1
         attachmentRetryCount = 0
-        if terminalSession?.terminalContainer === self {
-            terminalSession?.terminalContainer = nil
+        if session?.terminalContainer === self {
+            session?.terminalContainer = nil
+        }
+        if session?.pendingTerminalContainer === self {
+            session?.pendingTerminalContainer = nil
         }
         if terminalView?.superview === self {
             terminalView?.removeFromSuperview()
         }
+        session?.pendingTerminalContainer?.attachIfReady()
         terminalView = nil
         terminalSession = nil
         onActivate = nil
@@ -565,10 +602,28 @@ final class SpaceTerminalContainerView: NSView {
             attachmentRetryCount = 0
             if terminalSession?.terminalContainer === self {
                 terminalSession?.terminalContainer = nil
+                terminalSession?.pendingTerminalContainer?.attachIfReady()
             }
             return
         }
-        scheduleAttachment()
+        attachOrSchedule()
+    }
+
+    private func attachOrSchedule() {
+        // Attach a new view immediately. A moved view transfers as soon as
+        // SwiftUI releases its old container.
+        if terminalSession?.terminalContainer == nil,
+           (terminalView?.superview == nil
+                || terminalView?.superview?.window == nil) {
+            attachIfReady()
+        } else {
+            if let owner = terminalSession?.terminalContainer,
+               owner !== self,
+               creationSequence > owner.creationSequence {
+                terminalSession?.pendingTerminalContainer = self
+            }
+            scheduleAttachment()
+        }
     }
 
     private func scheduleAttachment(after delay: TimeInterval = 0) {
@@ -599,6 +654,8 @@ final class SpaceTerminalContainerView: NSView {
         if let owner = terminalSession.terminalContainer,
            owner !== self,
            owner.window != nil {
+            guard creationSequence > owner.creationSequence else { return }
+            terminalSession.pendingTerminalContainer = self
             guard attachmentRetryCount < Self.maximumAttachmentRetries else {
                 return
             }
@@ -608,6 +665,9 @@ final class SpaceTerminalContainerView: NSView {
         }
         attachmentRetryCount = 0
         terminalSession.terminalContainer = self
+        if terminalSession.pendingTerminalContainer === self {
+            terminalSession.pendingTerminalContainer = nil
+        }
         guard terminalView.superview !== self else {
             applyPresentation(to: terminalView)
             return

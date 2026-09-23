@@ -12,6 +12,8 @@ final class TerminalSession: ObservableObject, Identifiable {
     let defaultShellName: String
     var terminalView: TerminalView?
     weak var terminalContainer: SpaceTerminalContainerView?
+    weak var pendingTerminalContainer: SpaceTerminalContainerView?
+    var hasRenderedFrame = false
     @Published var isSearchPresented = false
     @Published var searchQuery = ""
     @Published private(set) var terminalFocusRequest = 0

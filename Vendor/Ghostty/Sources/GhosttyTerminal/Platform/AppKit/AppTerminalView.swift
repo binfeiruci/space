@@ -19,6 +19,7 @@
         var lastPointerSelectionRect: CGRect?
         var pendingSelectionMenuPoint: CGPoint?
         var onFocusChange: ((Bool) -> Void)?
+        public var onNextFrameRendered: (() -> Void)?
 
         open weak var delegate: (any TerminalSurfaceViewDelegate)? {
             get { core.delegate }
@@ -46,6 +47,7 @@
             delegate = nil
             controller = nil
             onFocusChange = nil
+            onNextFrameRendered = nil
             inputHandler = nil
             removeFromSuperview()
             layer?.contents = nil
@@ -108,7 +110,12 @@
                 self?.updateMetalLayerMetrics()
             }
             core.onPostRender = { [weak self] in
-                self?.enforceMetalLayerScale()
+                guard let self else { return }
+                enforceMetalLayerScale()
+                guard surface != nil else { return }
+                let callback = onNextFrameRendered
+                onNextFrameRendered = nil
+                callback?()
             }
         }
 
