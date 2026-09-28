@@ -506,7 +506,7 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func duplicatedTabUsesCurrentDirectoryAndIsInsertedBelowSource() throws {
+    func newTabInSameDirectoryUsesCurrentDirectoryAndIsInsertedBelowSource() throws {
         let model = AppModel(defaults: isolatedDefaults())
         let firstID = try #require(model.activeTabID)
         let firstSession = try #require(model.activeTerminalSession)
@@ -519,15 +519,15 @@ struct SpaceTests {
         model.addTabDivider(after: firstID)
         let dividerID = try #require(model.tabSidebarItems[1].dividerID)
 
-        model.duplicateTab(firstID)
+        model.openNewTerminalInSameDirectory(after: firstID)
 
-        let duplicateID = try #require(model.activeTabID)
+        let newTabID = try #require(model.activeTabID)
         #expect(model.terminalTabs.map(\.id) == [
-            firstID, duplicateID, secondID,
+            firstID, newTabID, secondID,
         ])
         #expect(model.tabSidebarItems == [
             .tab(firstID),
-            .tab(duplicateID),
+            .tab(newTabID),
             .divider(dividerID),
             .tab(secondID),
         ])

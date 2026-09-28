@@ -83,16 +83,16 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testDuplicateTabCreatesAnotherTab() throws {
+    func testNewTabInSameDirectoryCreatesAnotherTab() throws {
         let app = launchIsolatedApp()
 
         let rows = terminalTabRows(in: app)
         let firstRow = rows.firstMatch
         XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
         firstRow.rightClick()
-        let duplicateTabMenuItem = app.menuItems["Duplicate Tab"]
-        XCTAssertTrue(duplicateTabMenuItem.waitForExistence(timeout: 3))
-        duplicateTabMenuItem.click()
+        let newTabInSameDirectoryMenuItem = app.menuItems["New Tab in Same Directory"]
+        XCTAssertTrue(newTabInSameDirectoryMenuItem.waitForExistence(timeout: 3))
+        newTabInSameDirectoryMenuItem.click()
 
         expectation(
             for: NSPredicate { _, _ in rows.count == 2 },
