@@ -11,6 +11,13 @@ func terminalRunOnMain(
         return
     }
 
+    terminalEnqueueOnMain(operation)
+}
+
+/// Defers work until the current Ghostty call has returned, even on the main thread.
+func terminalEnqueueOnMain(
+    _ operation: @escaping @MainActor () -> Void
+) {
     DispatchQueue.main.async {
         MainActor.assumeIsolated {
             operation()

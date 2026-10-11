@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import GhosttyTerminal
+@testable import GhosttyTerminal
 import Testing
 @testable import Space
 
@@ -38,6 +38,15 @@ private final class TestDefaults: PreferencesStoring {
     }
 }
 
+@MainActor
+private final class CloseCallbackDelegate: TerminalSurfaceCloseDelegate {
+    var processAliveValues: [Bool] = []
+
+    func terminalDidClose(processAlive: Bool) {
+        processAliveValues.append(processAlive)
+    }
+}
+
 @Suite(.serialized)
 struct SpaceTests {
     private func isolatedDefaults() -> TestDefaults {
@@ -51,6 +60,59 @@ struct SpaceTests {
                 continuation.resume()
             }
         }
+    }
+
+    @Test @MainActor
+    func wakeupCallbackDoesNotReenterTheRuntime() async {
+        let controller = TerminalController(configSource: .none)
+        var wakeupHandled = false
+        controller.shouldProcessWakeup = {
+            wakeupHandled = true
+            return false
+        }
+
+        terminalControllerWakeupCallback(
+            userdata: Unmanaged.passUnretained(controller).toOpaque()
+        )
+
+        #expect(!wakeupHandled)
+        await nextMainRunLoop()
+        #expect(wakeupHandled)
+    }
+
+    @Test @MainActor
+    func closeCallbackWaitsForTheRuntimeToReturn() async {
+        let delegate = CloseCallbackDelegate()
+        let bridge = TerminalCallbackBridge(delegate: delegate)
+        // An identity token only: this test never passes the pointer to Ghostty.
+        bridge.rawSurface = UnsafeMutableRawPointer(bitPattern: 1)
+
+        terminalControllerCloseSurfaceCallback(
+            userdata: Unmanaged.passUnretained(bridge).toOpaque(),
+            processAlive: false
+        )
+
+        #expect(delegate.processAliveValues.isEmpty)
+        await nextMainRunLoop()
+        #expect(delegate.processAliveValues == [false])
+    }
+
+    @Test @MainActor
+    func queuedCloseDoesNotCloseAReplacementSurface() async {
+        let delegate = CloseCallbackDelegate()
+        let bridge = TerminalCallbackBridge(delegate: delegate)
+        bridge.rawSurface = UnsafeMutableRawPointer(bitPattern: 1)
+
+        terminalControllerCloseSurfaceCallback(
+            userdata: Unmanaged.passUnretained(bridge).toOpaque(),
+            processAlive: true
+        )
+        // Simulate teardown and an allocator reusing the old surface's address.
+        bridge.rawSurface = nil
+        bridge.rawSurface = UnsafeMutableRawPointer(bitPattern: 1)
+
+        await nextMainRunLoop()
+        #expect(delegate.processAliveValues.isEmpty)
     }
 
     @Test

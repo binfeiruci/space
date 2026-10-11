@@ -196,6 +196,40 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testExitingShellKeepsRemainingSplitInteractive() throws {
+        let app = launchIsolatedApp()
+        let panes = app.descendants(matching: .any).matching(
+            identifier: "terminal-split-pane"
+        )
+        let row = terminalTabRows(in: app).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 3))
+        app.typeText("cd ~\n")
+        XCTAssertTrue(waitForLabel("~", on: row))
+
+        for _ in 0..<3 {
+            app.typeKey("d", modifierFlags: .command)
+            expectation(
+                for: NSPredicate { _, _ in panes.count == 2 },
+                evaluatedWith: nil
+            )
+            waitForExpectations(timeout: 3)
+
+            // Exit after a burst of output so closing overlaps scheduled drawing.
+            app.typeText("for i in {1..100}; do printf 'closing %s\\n' $i; done; exit\n")
+            expectation(
+                for: NSPredicate { _, _ in panes.count == 1 },
+                evaluatedWith: nil
+            )
+            waitForExpectations(timeout: 5)
+
+            app.typeText("cd /tmp\n")
+            XCTAssertTrue(waitForLabel("tmp", on: row))
+            app.typeText("cd ~\n")
+            XCTAssertTrue(waitForLabel("~", on: row))
+        }
+    }
+
+    @MainActor
     func testCommandFFocusesTerminalSearchField() throws {
         let app = launchIsolatedApp()
 

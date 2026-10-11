@@ -12,8 +12,10 @@ private enum TerminalCallbacks {
         guard let userdata else { return }
         let controller = Unmanaged<TerminalController>.fromOpaque(userdata)
             .takeUnretainedValue()
-        terminalRunOnMain {
-            controller.handleWakeup()
+        // Ghostty can wake us while drawing with its renderer lock held.
+        // Running a tick inline could process a close and join that renderer.
+        terminalEnqueueOnMain { [weak controller] in
+            controller?.handleWakeup()
         }
     }
 
@@ -57,7 +59,13 @@ private enum TerminalCallbacks {
         let bridge = Unmanaged<TerminalCallbackBridge>
             .fromOpaque(userdata)
             .takeUnretainedValue()
-        terminalRunOnMain {
+        guard let surface = bridge.rawSurface else { return }
+        let generation = bridge.surfaceGeneration
+        // Destruction must happen after Ghostty finishes delivering the callback.
+        terminalEnqueueOnMain { [weak bridge] in
+            guard let bridge,
+                  bridge.rawSurface == surface,
+                  bridge.surfaceGeneration == generation else { return }
             bridge.handleClose(processAlive: processAlive)
         }
     }

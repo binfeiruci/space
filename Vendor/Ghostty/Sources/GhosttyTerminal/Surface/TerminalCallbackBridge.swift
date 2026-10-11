@@ -17,7 +17,11 @@ import GhosttyKit
 final class TerminalCallbackBridge {
     weak var delegate: (any TerminalSurfaceViewDelegate)?
     /// Raw surface pointer for use in C callbacks (e.g. clipboard).
-    nonisolated(unsafe) var rawSurface: ghostty_surface_t?
+    nonisolated(unsafe) var rawSurface: ghostty_surface_t? {
+        didSet { surfaceGeneration &+= 1 }
+    }
+    // A rebuilt surface may reuse the same address as the one it replaced.
+    nonisolated(unsafe) private(set) var surfaceGeneration: UInt64 = 0
     var onCellSizeChange: ((UInt32, UInt32) -> Void)?
     var onRenderRequest: (() -> Void)?
 
