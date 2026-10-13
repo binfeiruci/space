@@ -64,44 +64,6 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
-    func testNewTabBelowCreatesAnotherTab() throws {
-        let app = launchIsolatedApp()
-
-        let rows = terminalTabRows(in: app)
-        let firstRow = rows.firstMatch
-        XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
-        firstRow.rightClick()
-        let newTabBelowMenuItem = app.menuItems["New Tab Below"]
-        XCTAssertTrue(newTabBelowMenuItem.waitForExistence(timeout: 3))
-        newTabBelowMenuItem.click()
-
-        expectation(
-            for: NSPredicate { _, _ in rows.count == 2 },
-            evaluatedWith: nil
-        )
-        waitForExpectations(timeout: 3)
-    }
-
-    @MainActor
-    func testNewTabInSameDirectoryCreatesAnotherTab() throws {
-        let app = launchIsolatedApp()
-
-        let rows = terminalTabRows(in: app)
-        let firstRow = rows.firstMatch
-        XCTAssertTrue(firstRow.waitForExistence(timeout: 3))
-        firstRow.rightClick()
-        let newTabInSameDirectoryMenuItem = app.menuItems["New Tab in Same Directory"]
-        XCTAssertTrue(newTabInSameDirectoryMenuItem.waitForExistence(timeout: 3))
-        newTabInSameDirectoryMenuItem.click()
-
-        expectation(
-            for: NSPredicate { _, _ in rows.count == 2 },
-            evaluatedWith: nil
-        )
-        waitForExpectations(timeout: 3)
-    }
-
-    @MainActor
     func testTabDividerCanBeAddedAndRemoved() throws {
         let app = launchIsolatedApp()
 

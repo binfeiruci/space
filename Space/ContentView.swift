@@ -244,14 +244,6 @@ private struct SidebarTerminalTabRow: View {
         .onHover { isHovering = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovering)
         .contextMenu {
-            Button("New Tab in Same Directory") {
-                model.openNewTerminalInSameDirectory(after: tab.id)
-            }
-
-            Button("New Tab Below") {
-                model.openNewTerminal(after: tab.id)
-            }
-
             Button("New Divider Below") {
                 model.addTabDivider(after: tab.id)
             }

@@ -543,60 +543,6 @@ struct SpaceTests {
     }
 
     @Test @MainActor
-    func newTabBelowIsInsertedAfterSelectedSidebarTab() throws {
-        let model = AppModel(defaults: isolatedDefaults())
-        let firstID = try #require(model.activeTabID)
-        model.openNewTerminal()
-        let secondID = try #require(model.activeTabID)
-        model.addTabDivider(after: firstID)
-        let dividerID = try #require(model.tabSidebarItems[1].dividerID)
-
-        model.openNewTerminal(after: firstID)
-
-        let insertedID = try #require(model.activeTabID)
-        #expect(model.terminalTabs.map(\.id) == [
-            firstID, insertedID, secondID,
-        ])
-        #expect(model.tabSidebarItems == [
-            .tab(firstID),
-            .tab(insertedID),
-            .divider(dividerID),
-            .tab(secondID),
-        ])
-        #expect(model.activeTerminalSession?.workingDirectoryURL
-            == FileManager.default.homeDirectoryForCurrentUser)
-    }
-
-    @Test @MainActor
-    func newTabInSameDirectoryUsesCurrentDirectoryAndIsInsertedBelowSource() throws {
-        let model = AppModel(defaults: isolatedDefaults())
-        let firstID = try #require(model.activeTabID)
-        let firstSession = try #require(model.activeTerminalSession)
-        firstSession.updateProcessState(.init(
-            name: firstSession.defaultShellName,
-            workingDirectory: "/tmp"
-        ))
-        model.openNewTerminal()
-        let secondID = try #require(model.activeTabID)
-        model.addTabDivider(after: firstID)
-        let dividerID = try #require(model.tabSidebarItems[1].dividerID)
-
-        model.openNewTerminalInSameDirectory(after: firstID)
-
-        let newTabID = try #require(model.activeTabID)
-        #expect(model.terminalTabs.map(\.id) == [
-            firstID, newTabID, secondID,
-        ])
-        #expect(model.tabSidebarItems == [
-            .tab(firstID),
-            .tab(newTabID),
-            .divider(dividerID),
-            .tab(secondID),
-        ])
-        #expect(model.activeTerminalSession?.workingDirectoryURL.path == "/tmp")
-    }
-
-    @Test @MainActor
     func tabDividerIsAnIndependentReorderableSidebarItem() throws {
         let model = AppModel(defaults: isolatedDefaults())
         let firstID = try #require(model.activeTabID)
