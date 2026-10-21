@@ -203,6 +203,48 @@ final class SpaceUITests: XCTestCase {
     }
 
     @MainActor
+    func testTerminalScrollbarCanDragAndPageThroughScrollback() throws {
+        let app = launchIsolatedApp()
+        let scrollbar = app.scrollBars["terminal-scrollbar"]
+        XCTAssertTrue(scrollbar.waitForExistence(timeout: 3))
+        app.typeKey("u", modifierFlags: .control)
+        app.typeText("for i in {1..300}; do printf 'scrollback %s\\n' $i; done\n")
+        expectation(
+            for: NSPredicate { _, _ in scrollbar.isEnabled },
+            evaluatedWith: nil
+        )
+        waitForExpectations(timeout: 5)
+
+        func waitForValue(matching condition: @escaping (Double) -> Bool) {
+            expectation(
+                for: NSPredicate { _, _ in
+                    (scrollbar.value as? NSNumber).map { condition($0.doubleValue) } ?? false
+                },
+                evaluatedWith: nil
+            )
+            waitForExpectations(timeout: 3)
+        }
+
+        scrollbar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25)).hover()
+        let bottomValue = try XCTUnwrap(scrollbar.value as? NSNumber).doubleValue
+        scrollbar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
+        waitForValue { $0 < bottomValue }
+
+        let pageValue = try XCTUnwrap(scrollbar.value as? NSNumber).doubleValue
+        let knob = scrollbar.descendants(matching: .valueIndicator).firstMatch
+        XCTAssertTrue(knob.exists)
+        knob.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.25))
+            .click(forDuration: 0.1, thenDragTo:
+                scrollbar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
+            )
+        waitForValue { $0 < pageValue }
+
+        let topValue = try XCTUnwrap(scrollbar.value as? NSNumber).doubleValue
+        scrollbar.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)).click()
+        waitForValue { $0 > topValue }
+    }
+
+    @MainActor
     func testTerminalUsesHiddenTitleBarSpace() throws {
         let app = launchIsolatedApp()
 

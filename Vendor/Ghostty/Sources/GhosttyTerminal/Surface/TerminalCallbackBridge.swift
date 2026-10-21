@@ -24,6 +24,7 @@ final class TerminalCallbackBridge {
     nonisolated(unsafe) private(set) var surfaceGeneration: UInt64 = 0
     var onCellSizeChange: ((UInt32, UInt32) -> Void)?
     var onRenderRequest: (() -> Void)?
+    var onScrollbarChange: ((TerminalScrollbarMetrics) -> Void)?
 
     init(delegate: (any TerminalSurfaceViewDelegate)? = nil) {
         self.delegate = delegate
@@ -31,6 +32,14 @@ final class TerminalCallbackBridge {
 
     func handleAction(_ action: ghostty_action_s) {
         switch action.tag {
+        case GHOSTTY_ACTION_SCROLLBAR:
+            let scrollbar = action.action.scrollbar
+            onScrollbarChange?(TerminalScrollbarMetrics(
+                total: scrollbar.total,
+                offset: scrollbar.offset,
+                visible: scrollbar.len
+            ))
+
         case GHOSTTY_ACTION_SET_TITLE:
             if let cStr = action.action.set_title.title {
                 let title = String(cString: cStr)

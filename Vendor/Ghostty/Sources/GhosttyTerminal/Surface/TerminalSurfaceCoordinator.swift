@@ -336,6 +336,9 @@ final class TerminalSurfaceCoordinator {
         surface?.setFocus(false)
         surface?.free()
         surface = nil
+        bridge.onScrollbarChange?(TerminalScrollbarMetrics(
+            total: 0, offset: 0, visible: 0
+        ))
         lastMetrics = nil
         lastPixelWidth = nil
         lastPixelHeight = nil

@@ -82,6 +82,20 @@ public final class TerminalController {
         renderedConfigContents
     }
 
+    public var backgroundColor: NSColor? {
+        guard let config else { return nil }
+        var color = ghostty_config_color_s()
+        let found = "background".withCString {
+            ghostty_config_get(config, &color, $0, 10)
+        }
+        guard found else { return nil }
+        return NSColor(
+            calibratedRed: Double(color.r) / 255,
+            green: Double(color.g) / 255,
+            blue: Double(color.b) / 255, alpha: 1
+        )
+    }
+
     // MARK: - Initializers
 
     /// Creates a controller with the default terminal configuration.

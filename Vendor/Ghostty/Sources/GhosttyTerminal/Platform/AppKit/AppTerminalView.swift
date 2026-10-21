@@ -20,6 +20,10 @@
         var pendingSelectionMenuPoint: CGPoint?
         var onFocusChange: ((Bool) -> Void)?
         public var onNextFrameRendered: (() -> Void)?
+        public private(set) var scrollbarMetrics = TerminalScrollbarMetrics(
+            total: 0, offset: 0, visible: 0
+        )
+        public var onScrollbarChange: ((TerminalScrollbarMetrics) -> Void)?
 
         open weak var delegate: (any TerminalSurfaceViewDelegate)? {
             get { core.delegate }
@@ -48,6 +52,7 @@
             controller = nil
             onFocusChange = nil
             onNextFrameRendered = nil
+            onScrollbarChange = nil
             inputHandler = nil
             removeFromSuperview()
             layer?.contents = nil
@@ -85,6 +90,12 @@
 
             inputHandler = TerminalKeyEventHandler(view: self)
             setupTrackingArea()
+
+            core.bridge.onScrollbarChange = { [weak self] metrics in
+                guard let self else { return }
+                scrollbarMetrics = metrics
+                onScrollbarChange?(metrics)
+            }
 
             core.isAttached = { [weak self] in self?.window != nil }
             core.scaleFactor = { [weak self] in

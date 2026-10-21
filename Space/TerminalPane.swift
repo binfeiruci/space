@@ -540,6 +540,30 @@ final class SpaceTerminalContainerView: NSView {
     private var requestsFocus = false
     private var focusRequest = 0
     private var onActivate: (() -> Void)?
+    private let scrollOverlay = TerminalScrollOverlay(frame: .zero)
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        scrollOverlay.frame = bounds
+        scrollOverlay.autoresizingMask = [.width, .height]
+        addSubview(scrollOverlay)
+        scrollOverlay.onScrollToRow = { [weak self] row in
+            guard let self, let view = terminalView as? SpaceTerminalView,
+                  view.superview === self else { return }
+            onActivate?()
+            view.scrollToRow(row)
+        }
+        scrollOverlay.onScrollWheel = { [weak self] event in
+            guard let self, let view = terminalView as? SpaceTerminalView,
+                  view.superview === self else { return }
+            view.scrollWheel(with: event)
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     func configure(
         _ view: NSView,
@@ -675,7 +699,7 @@ final class SpaceTerminalContainerView: NSView {
         terminalView.removeFromSuperview()
         terminalView.frame = bounds
         terminalView.autoresizingMask = [.width, .height]
-        addSubview(terminalView)
+        addSubview(terminalView, positioned: .below, relativeTo: scrollOverlay)
         applyPresentation(to: terminalView)
         guard let terminalView = terminalView as? SpaceTerminalView else {
             return
@@ -690,10 +714,161 @@ final class SpaceTerminalContainerView: NSView {
 
     private func applyPresentation(to view: NSView) {
         guard let view = view as? SpaceTerminalView else { return }
+        view.onScrollbarChange = { [weak self, weak view] metrics in
+            guard let self, let view,
+                  view.superview === self else { return }
+            scrollOverlay.update(metrics)
+        }
+        scrollOverlay.update(view.scrollbarMetrics)
+        if let background = view.controller?.backgroundColor {
+            let brightness = background.redComponent * 0.2126
+                + background.greenComponent * 0.7152
+                + background.blueComponent * 0.0722
+            scrollOverlay.appearance = NSAppearance(
+                named: brightness < 0.5 ? .darkAqua : .aqua
+            )
+        }
         view.setSurfaceVisible(isVisible)
         view.onActivate = onActivate
         view.requestFocus(focusRequest, enabled: requestsFocus)
     }
+}
+
+/// Native overlay scrollers share the terminal's viewport without intercepting
+/// terminal input or changing the renderer's size.
+@MainActor
+private final class TerminalScrollOverlay: NSScrollView {
+    var onScrollToRow: ((UInt) -> Void)?
+    var onScrollWheel: ((NSEvent) -> Void)?
+    private var metrics = TerminalScrollbarMetrics(total: 0, offset: 0, visible: 0)
+    private var isSynchronizing = false
+    private var isLiveScrolling = false
+    private var lastSentRow: UInt64?
+    private var gutterTrackingArea: NSTrackingArea?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        borderType = .noBorder
+        drawsBackground = false
+        contentView.drawsBackground = false
+        automaticallyAdjustsContentInsets = false
+        contentInsets = NSEdgeInsetsZero
+        hasVerticalScroller = true
+        hasHorizontalScroller = false
+        autohidesScrollers = false
+        scrollerStyle = .overlay
+        verticalScrollElasticity = .none
+        horizontalScrollElasticity = .none
+        documentView = NSView()
+        verticalScroller?.setAccessibilityIdentifier("terminal-scrollbar")
+        verticalScroller?.setAccessibilityLabel("Terminal scrollback")
+
+        contentView.postsBoundsChangedNotifications = true
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(viewportChanged),
+                           name: NSView.boundsDidChangeNotification, object: contentView)
+        center.addObserver(self, selector: #selector(scrollStarted),
+                           name: NSScrollView.willStartLiveScrollNotification, object: self)
+        center.addObserver(self, selector: #selector(scrollEnded),
+                           name: NSScrollView.didEndLiveScrollNotification, object: self)
+        center.addObserver(self, selector: #selector(restoreOverlayStyle),
+                           name: NSScroller.preferredScrollerStyleDidChangeNotification,
+                           object: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override var safeAreaInsets: NSEdgeInsets { NSEdgeInsetsZero }
+
+    override func layout() {
+        isSynchronizing = true
+        super.layout()
+        isSynchronizing = false
+        synchronizeViewport()
+    }
+
+    func update(_ next: TerminalScrollbarMetrics) {
+        let didScroll = next.total == metrics.total && next.offset != metrics.offset
+        metrics = next
+        synchronizeViewport()
+        if didScroll { flashScrollers() }
+    }
+
+    private func synchronizeViewport() {
+        guard !isSynchronizing, let documentView else { return }
+        isSynchronizing = true
+        defer { isSynchronizing = false }
+        let height = contentSize.height
+        let rowHeight = height / CGFloat(max(metrics.visible, 1))
+        let extraHeight = CGFloat(metrics.maximumOffset) * rowHeight
+        documentView.frame = NSRect(
+            x: 0, y: 0, width: contentSize.width, height: height + extraHeight
+        )
+        if !isLiveScrolling {
+            contentView.scroll(to: NSPoint(
+                x: 0, y: CGFloat(metrics.maximumOffset - metrics.offset) * rowHeight
+            ))
+            lastSentRow = metrics.offset
+        }
+        reflectScrolledClipView(contentView)
+    }
+
+    @objc private func viewportChanged() {
+        guard !isSynchronizing, metrics.maximumOffset > 0,
+              let documentView else { return }
+        let extent = documentView.frame.height - contentSize.height
+        guard extent > 0 else { return }
+        let fraction = min(max(1 - contentView.bounds.minY / extent, 0), 1)
+        let row = UInt64((fraction * Double(metrics.maximumOffset)).rounded())
+        guard row != lastSentRow else { return }
+        lastSentRow = row
+        onScrollToRow?(UInt(row))
+    }
+
+    @objc private func scrollStarted() { isLiveScrolling = true }
+
+    @objc private func scrollEnded() {
+        isLiveScrolling = false
+        synchronizeViewport()
+    }
+
+    @objc private func restoreOverlayStyle() {
+        scrollerStyle = .overlay
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point), let scroller = verticalScroller,
+              hit === scroller || hit.isDescendant(of: scroller) else { return nil }
+        return hit
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        onScrollWheel?(event)
+    }
+
+    override func updateTrackingAreas() {
+        if let gutterTrackingArea { removeTrackingArea(gutterTrackingArea) }
+        super.updateTrackingAreas()
+        let width = NSScroller.scrollerWidth(for: .regular, scrollerStyle: .overlay)
+        let area = NSTrackingArea(
+            rect: NSRect(x: bounds.maxX - width, y: bounds.minY,
+                         width: width, height: bounds.height),
+            options: [.mouseEnteredAndExited, .mouseMoved, .activeInKeyWindow],
+            owner: self, userInfo: nil
+        )
+        gutterTrackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) { flashScrollers() }
+    override func mouseMoved(with event: NSEvent) { flashScrollers() }
 }
 
 @MainActor

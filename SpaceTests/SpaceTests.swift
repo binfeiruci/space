@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import GhosttyKit
 @testable import GhosttyTerminal
 import Testing
 @testable import Space
@@ -49,6 +50,76 @@ private final class CloseCallbackDelegate: TerminalSurfaceCloseDelegate {
 
 @Suite(.serialized)
 struct SpaceTests {
+    @Test
+    func scrollbarMetricsClampTheVisibleScrollbackRange() {
+        let middle = TerminalScrollbarMetrics(total: 200, offset: 75, visible: 50)
+        #expect(middle.offset == 75)
+        #expect(middle.visible == 50)
+        #expect(middle.maximumOffset == 150)
+
+        let bottom = TerminalScrollbarMetrics(total: 200, offset: 200, visible: 50)
+        #expect(bottom.offset == 150)
+
+        let empty = TerminalScrollbarMetrics(total: 0, offset: 0, visible: 50)
+        #expect(empty.maximumOffset == 0)
+        #expect(empty.offset == 0)
+        #expect(empty.visible == 0)
+    }
+
+    @Test @MainActor
+    func scrollbarCallbacksUpdateAndResetTheViewsCachedMetrics() {
+        let view = TerminalView(frame: .zero)
+        var lastUpdate: TerminalScrollbarMetrics?
+        view.onScrollbarChange = { lastUpdate = $0 }
+        var action = ghostty_action_s()
+        action.tag = GHOSTTY_ACTION_SCROLLBAR
+        action.action.scrollbar = ghostty_action_scrollbar_s(
+            total: 200, offset: 75, len: 50
+        )
+
+        view.core.bridge.handleAction(action)
+
+        let expected = TerminalScrollbarMetrics(total: 200, offset: 75, visible: 50)
+        #expect(view.scrollbarMetrics == expected)
+        #expect(lastUpdate == expected)
+
+        view.core.freeSurface()
+
+        #expect(view.scrollbarMetrics.total == 0)
+        #expect(lastUpdate?.total == 0)
+    }
+
+    @Test @MainActor
+    func terminalScrollbarOverlaysTheFullWidthViewport() async throws {
+        let session = TerminalSession(
+            workingDirectoryURL: FileManager.default.homeDirectoryForCurrentUser
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [], backing: .buffered, defer: false
+        )
+        let container = SpaceTerminalContainerView(frame: window.contentView!.bounds)
+        window.contentView = container
+        let terminal = NSView()
+        container.attach(terminal, for: session)
+        await nextMainRunLoop()
+        container.layoutSubtreeIfNeeded()
+
+        let overlay = try #require(container.subviews.compactMap { $0 as? NSScrollView }.first)
+        #expect(overlay.scrollerStyle == .overlay)
+        #expect(!overlay.drawsBackground)
+        #expect(overlay.frame == container.bounds)
+        #expect(terminal.frame == container.bounds)
+        #expect(overlay.hitTest(NSPoint(x: 200, y: 150)) == nil)
+        #expect(overlay.verticalScroller != nil)
+
+        container.setFrameSize(NSSize(width: 600, height: 450))
+        container.layoutSubtreeIfNeeded()
+        #expect(overlay.frame == container.bounds)
+        #expect(terminal.frame == container.bounds)
+        window.contentView = nil
+    }
+
     private func isolatedDefaults() -> TestDefaults {
         TestDefaults()
     }
