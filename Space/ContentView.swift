@@ -22,9 +22,11 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: splitViewVisibility) {
             TabSidebar()
+                .toolbar(removing: .sidebarToggle)
         } detail: {
             TerminalArea()
                 .ignoresSafeArea(.container, edges: .top)
+                .toolbar(removing: .sidebarToggle)
         }
         .modifier(FullScreenToolbarModifier())
         .background(Color(nsColor: .windowBackgroundColor))
